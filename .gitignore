@@ -1,0 +1,37 @@
+# Fichiers d'environnement
+.env
+
+# Dossiers et fichiers Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Fichiers spécifiques aux modèles (souvent très grands)
+# Si vous avez des modèles téléchargés par transformers, ils peuvent être ici
+# ou dans un dossier cache. Si vous les incluez dans le dépôt, Vercel les déploiera.
+# Si vous ne voulez pas les versionner, ajoutez leurs chemins ici.
+# Par exemple, si vous avez un dossier 'models_cache' :
+# models_cache/
+
+# Fichiers spécifiques à FAISS
+# index.faiss # Si vous ne voulez pas versionner l'index FAISS
+# chunks_metadata.json # Si vous ne voulez pas versionner les métadonnées
+
+# Fichiers spécifiques à l'IDE (Android Studio, VS Code, etc.)
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Logs
+*.log
