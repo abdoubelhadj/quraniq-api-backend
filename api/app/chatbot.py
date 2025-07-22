@@ -7,6 +7,7 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 import google.generativeai as genai
 import logging
+import requests # <-- Nouvelle importation pour les requêtes HTTP
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,42 +50,32 @@ class QuranIQChatbot:
                 raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set.")
             genai.configure(api_key=gemini_api_key)
 
-            # Define paths relative to the current file
-            RAG_FOLDER = os.path.join(os.path.dirname(__file__), "rag")
-            INDEX_PATH = os.path.join(RAG_FOLDER, "index.faiss")
-            METADATA_PATH = os.path.join(RAG_FOLDER, "chunks_metadata.json")
+            # --- NOUVELLE LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB ---
+            BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
+            BLOB_METADATA_URL = os.getenv("BLOB_METADATA_URL")
 
-            # Ensure RAG folder exists
-            os.makedirs(RAG_FOLDER, exist_ok=True)
+            if not BLOB_INDEX_URL or not BLOB_METADATA_URL:
+                raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL environment variables not set. Please configure them on Vercel.")
 
-            # Load FAISS index
-            if os.path.exists(INDEX_PATH):
-                self.index = faiss.read_index(INDEX_PATH)
-                logging.info(f"FAISS index loaded from {INDEX_PATH}")
-            else:
-                logging.warning(f"FAISS index not found at {INDEX_PATH}. Creating a dummy index for testing.")
-                # Create a dummy index if not found (for initial setup/testing)
-                # Dimension should match your embedding model output (xlm-roberta-base is 768)
-                dummy_dimension = 768
-                self.index = faiss.IndexFlatL2(dummy_dimension)
-                # Add some dummy vectors to prevent errors if search is called
-                self.index.add(np.random.rand(10, dummy_dimension).astype('float32'))
-                faiss.write_index(self.index, INDEX_PATH) # Save dummy for future runs
+            # Téléchargement de l'index FAISS
+            logging.info(f"Downloading FAISS index from {BLOB_INDEX_URL}")
+            index_response = requests.get(BLOB_INDEX_URL)
+            index_response.raise_for_status() # Lève une exception pour les codes d'erreur HTTP
+            # Écriture dans /tmp qui est le seul répertoire inscriptible dans l'environnement Lambda de Vercel
+            with open("/tmp/index.faiss", "wb") as f:
+                f.write(index_response.content)
+            self.index = faiss.read_index("/tmp/index.faiss")
+            logging.info("FAISS index downloaded and loaded.")
 
-            # Load chunks and metadata
-            if os.path.exists(METADATA_PATH):
-                with open(METADATA_PATH, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.chunks = data["chunks"]
-                    self.metadata = data["metadata"]
-                logging.info(f"Chunks metadata loaded from {METADATA_PATH}")
-            else:
-                logging.warning(f"Chunks metadata not found at {METADATA_PATH}. Creating dummy data.")
-                # Create dummy data if not found
-                self.chunks = ["Ceci est un chunk de test sur l'Islam.", "Le Prophète Muhammad est le dernier prophète de l'Islam."]
-                self.metadata = [{"source": "Dummy Doc 1"}, {"source": "Dummy Doc 2"}]
-                with open(METADATA_PATH, 'w', encoding='utf-8') as f:
-                    json.dump({"chunks": self.chunks, "metadata": self.metadata}, f, ensure_ascii=False, indent=2)
+            # Téléchargement des métadonnées
+            logging.info(f"Downloading chunks metadata from {BLOB_METADATA_URL}")
+            metadata_response = requests.get(BLOB_METADATA_URL)
+            metadata_response.raise_for_status()
+            data = metadata_response.json()
+            self.chunks = data["chunks"]
+            self.metadata = data["metadata"]
+            logging.info("Chunks metadata downloaded and loaded.")
+            # --- FIN DE LA NOUVELLE LOGIQUE ---
 
 
             self.tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base")
@@ -103,10 +94,8 @@ class QuranIQChatbot:
 
     def detect_language(self, text):
         """Détecte la langue du texte (fr, ar, en, dz)."""
-        # Plus de mots pour une meilleure détection
         arabic_chars = re.compile(r'[\u0600-\u06FF]')
         if arabic_chars.search(text):
-            # Vérifier les mots spécifiques au dialecte algérien
             algerian_words = ['واش', 'كيفاش', 'وين', 'علاش', 'بصح', 'برك', 'حنا', 'نتوما', 'هوما', 'راني', 'راك', 'راها', 'تاع', 'بزاف', 'شوية']
             if any(word in text for word in algerian_words):
                 return "dz"
@@ -116,7 +105,6 @@ class QuranIQChatbot:
         if any(word in text.lower().split() for word in english_words):
             return "en"
         
-        # Par défaut, si aucune autre langue n'est détectée
         return "fr"
 
     def is_religious_question(self, query):
@@ -131,10 +119,12 @@ class QuranIQChatbot:
     def generate_query_embedding(self, query):
         """Génère l'embedding d'une requête."""
         try:
+            logging.info("Starting query embedding generation.")
             inputs = self.tokenizer(query, return_tensors="pt", truncation=True, padding=True, max_length=512)
             with torch.no_grad():
                 outputs = self.embedding_model(**inputs)
                 embedding = outputs.last_hidden_state.mean(dim=1).numpy().astype("float32")
+            logging.info("Query embedding generated successfully.")
             return embedding
         except Exception as e:
             logging.error(f"Error generating query embedding: {e}", exc_info=True)
@@ -143,10 +133,15 @@ class QuranIQChatbot:
     def search_similar_chunks(self, query, top_k=3):
         """Recherche les chunks les plus similaires dans l'index FAISS."""
         try:
+            logging.info("Starting search for similar chunks.")
             emb = self.generate_query_embedding(query)
             if emb is None:
+                logging.warning("Embedding generation failed, returning empty chunks.")
                 return []
+            
+            logging.info("Performing FAISS search.")
             distances, indices = self.index.search(emb, top_k)
+            
             results = []
             for i, d in zip(indices[0], distances[0]):
                 if 0 <= i < len(self.chunks):
@@ -155,6 +150,7 @@ class QuranIQChatbot:
                         "source": self.metadata[i],
                         "distance": float(d)
                     })
+            logging.info(f"FAISS search completed. Found {len(results)} relevant chunks.")
             return results
         except Exception as e:
             logging.error(f"Error searching similar chunks: {e}", exc_info=True)
@@ -166,24 +162,26 @@ class QuranIQChatbot:
         sources = []
         mode = "general"
 
-        # Only use context if the top chunk is sufficiently similar (distance threshold)
         if context_chunks and context_chunks[0]['distance'] < 1.0: # Adjust threshold as needed
             context = "\n\n".join(f"Source: {c['source']}\nContenu: {c['chunk']}" for c in context_chunks[:2])
             sources = list(set(c['source'] for c in context_chunks[:2]))
             mode = "hybrid"
+            logging.info("Context used for generation.")
         else:
             logging.info("No relevant context found or distance too high, generating general response.")
 
         prompts = {
             "fr": f"Tu es un expert de l'islam. Réponds clairement et de manière concise. Utilise les informations fournies si pertinentes.\nQuestion : {query}\n{context}",
-            "ar": f"أنت خبير في الإسلام. أجب بوضوح وإيجاز. استخدم المعلومات المقدمة إذا كانت ذات صلة.\nالسؤال: {query}\n{context}",
+            "ar": f"أنت خبير في الإسلام. أجب بوضضوح وإيجاز. استخدم المعلومات المقدمة إذا كانت ذات صلة.\nالسؤال: {query}\n{context}",
             "en": f"You are an expert in Islam. Answer clearly and concisely. Use provided information if relevant.\nQuestion: {query}\n{context}",
             "dz": f"راك خبير فالدين. جاوب ببساطة ووضوح. استعمل المعلومات لي عطيتك إذا كانت مفيدة.\nالسؤال: {query}\n{context}",
         }
 
         prompt = prompts.get(language, prompts["fr"])
+        logging.info(f"Sending prompt to Gemini model. Language: {language}, Mode: {mode}")
         try:
             result = self.gemini_model.generate_content(prompt)
+            logging.info("Response received from Gemini.")
             return {
                 "response": result.text.strip(),
                 "language": language,
@@ -201,8 +199,12 @@ class QuranIQChatbot:
 
     def chat(self, query):
         """Fonction principale de chat, gère la détection de langue, la pertinence et la génération de réponse."""
+        logging.info(f"Chat request received: {query[:50]}...")
         lang = self.detect_language(query)
+        logging.info(f"Detected language: {lang}")
+
         if not self.is_religious_question(query):
+            logging.info("Non-religious question detected.")
             return {
                 "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
                 "language": lang,
@@ -210,5 +212,9 @@ class QuranIQChatbot:
                 "mode": "non-religious"
             }
         
+        logging.info("Religious question detected. Searching for similar chunks...")
         chunks = self.search_similar_chunks(query)
+        logging.info(f"Found {len(chunks)} similar chunks.")
+        
+        logging.info("Generating response from Gemini model...")
         return self.generate_response(query, chunks, lang)
