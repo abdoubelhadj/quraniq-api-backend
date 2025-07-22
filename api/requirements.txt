@@ -6,4 +6,5 @@ faiss-cpu
 torch
 transformers
 google-generativeai
+requests
 # gunicorn # Optionnel, Vercel gère le serveur ASGI avec uvicorn
