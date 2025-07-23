@@ -6,7 +6,7 @@ import faiss
 import google.generativeai as genai
 import logging
 import requests
-import fal_ai as fal # Importez la bibliothèque Fal.ai
+from openai import OpenAI # Importez le client OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,7 +19,7 @@ class QuranIQChatbot:
         self.gemini_model = None
         self.working_model_name = None
         self.is_loaded = False
-        self.fal_client = None # Client Fal.ai
+        self.openai_client = None # Client OpenAI
         self.load_components()
 
     def find_working_gemini_model(self):
@@ -39,7 +39,7 @@ class QuranIQChatbot:
     def load_components(self):
         """Charge tous les composants nécessaires au chatbot."""
         try:
-            logging.info("🔄 Chargement du chatbot (avec RAG via Fal.ai pour embeddings)...")
+            logging.info("🔄 Chargement du chatbot (avec RAG via OpenAI Embeddings)...")
 
             # Get API Key from environment variable for Gemini
             gemini_api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
@@ -47,12 +47,12 @@ class QuranIQChatbot:
                 raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set.")
             genai.configure(api_key=gemini_api_key)
 
-            # Initialiser le client Fal.ai
-            fal_key = os.getenv("FAL_KEY")
-            if not fal_key:
-                raise ValueError("FAL_KEY environment variable not set. Please configure it for Fal.ai embeddings.")
-            self.fal_client = fal.Fal(fal_key)
-            logging.info("Fal.ai client initialized.")
+            # Initialiser le client OpenAI pour les embeddings
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+            if not openai_api_key:
+                raise ValueError("OPENAI_API_KEY environment variable not set. Please configure it for OpenAI embeddings.")
+            self.openai_client = OpenAI(api_key=openai_api_key)
+            logging.info("OpenAI client initialized for embeddings.")
 
             # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB ---
             BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
@@ -85,7 +85,7 @@ class QuranIQChatbot:
                 raise Exception("Aucun modèle Gemini valide n'a pu être trouvé ou initialisé.")
             
             self.is_loaded = True
-            logging.info("✅ Chatbot chargé avec succès (avec RAG via Fal.ai pour embeddings).")
+            logging.info("✅ Chatbot chargé avec succès (avec RAG via OpenAI Embeddings).")
         except Exception as e:
             logging.error(f"❌ Erreur lors du chargement du chatbot : {e}", exc_info=True)
             self.is_loaded = False
@@ -115,42 +115,24 @@ class QuranIQChatbot:
         return any(k in query.lower() for k in keywords)
 
     def generate_query_embedding(self, query):
-        """Génère l'embedding d'une requête en utilisant Fal.ai."""
+        """Génère l'embedding d'une requête en utilisant OpenAI."""
         try:
-            logging.info("Starting query embedding generation with Fal.ai.")
-            # Utilisation d'un modèle d'embedding de Fal.ai, par exemple 'text-embedding-ada-002' ou un modèle Sentence Transformer
-            # Vous devrez vérifier la documentation de Fal.ai pour les modèles d'embedding disponibles et leurs noms exacts.
-            # Pour cet exemple, j'utilise un nom générique.
-            # Un modèle courant pour les embeddings est 'sentence-transformers/all-MiniLM-L6-v2' ou 'text-embedding-ada-002'
-            # Fal.ai peut avoir des noms spécifiques pour ces modèles.
-            # Assurez-vous que le modèle choisi sur Fal.ai est adapté à votre langue.
-            
-            # Exemple d'appel à Fal.ai pour un embedding de texte
-            # Le modèle exact et la structure de l'appel peuvent varier légèrement.
-            # Consultez la documentation de Fal.ai pour le modèle d'embedding de texte.
-            
-            # Voici un exemple basé sur la documentation de Fal.ai pour les embeddings:
-            # https://www.fal.ai/models/text-embedding-ada-002/api
-            # Note: Le modèle 'text-embedding-ada-002' est un modèle OpenAI, Fal.ai peut l'héberger.
-            # Si vous voulez un modèle Sentence Transformer, le nom sera différent.
-            
-            # Pour un modèle Sentence Transformer hébergé par Fal.ai, l'appel pourrait ressembler à ceci:
-            # result = self.fal_client.run("fal-ai/sentence-transformers-all-minilm-l6-v2", {"text": query})
-            # Ou pour un modèle d'embedding plus généraliste:
-            result = self.fal_client.run("fal-ai/text-embedding-ada-002", {"text": query})
-            
-            embedding = np.array(result['embedding']).astype("float32").reshape(1, -1)
-            logging.info("Query embedding generated successfully with Fal.ai.")
+            logging.info("Starting query embedding generation with OpenAI.")
+            # Modèle d'embedding recommandé par OpenAI pour la plupart des cas
+            model_name = "text-embedding-ada-002" 
+            response = self.openai_client.embeddings.create(input=[query], model=model_name)
+            embedding = np.array(response.data[0].embedding).astype("float32").reshape(1, -1)
+            logging.info("Query embedding generated successfully with OpenAI.")
             return embedding
         except Exception as e:
-            logging.error(f"Error generating query embedding with Fal.ai: {e}", exc_info=True)
+            logging.error(f"Error generating query embedding with OpenAI: {e}", exc_info=True)
             return None
 
     def search_similar_chunks(self, query, top_k=3):
         """Recherche les chunks les plus similaires dans l'index FAISS."""
         try:
             logging.info("Starting search for similar chunks.")
-            emb = self.generate_query_embedding(query) # Appel à Fal.ai ici
+            emb = self.generate_query_embedding(query) # Appel à OpenAI ici
             if emb is None:
                 logging.warning("Embedding generation failed, returning empty chunks.")
                 return []
