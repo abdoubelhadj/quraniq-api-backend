@@ -5,6 +5,4 @@ numpy
 faiss-cpu
 google-generativeai
 requests
-fal-ai # <-- Nouvelle dépendance pour Fal.ai
-# torch # <-- Supprimer cette ligne
-# transformers # <-- Supprimer cette ligne
+fal-ai
