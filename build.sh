@@ -1,43 +1,26 @@
 #!/bin/bash
 
 # Définir la version de Python à utiliser
-# Vercel supporte généralement python3.9, python3.10, python3.11, python3.12
-# Nous allons essayer python3.10 car c'est une version stable et largement compatible.
 PYTHON_VERSION="python3.10"
+PIP_VERSION="pip3.10"
 
 echo "--- Démarrage du script de build personnalisé ---"
 echo "Utilisation de la version de Python: $PYTHON_VERSION"
 
-# Vérifier si le répertoire /usr/local/bin existe et est dans le PATH
-if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
-  export PATH="/usr/local/bin:$PATH"
-fi
-
-# Installer pyenv si ce n'est pas déjà fait (pour gérer les versions de Python)
-# Note: Vercel a déjà des runtimes Python pré-installés, mais cette approche est plus robuste
-# si la détection automatique échoue.
-# Cependant, pour Vercel, il est souvent plus simple d'utiliser les binaires directement.
-# Nous allons simplifier et utiliser les binaires Vercel si disponibles.
-
-# Assurez-vous que pip est disponible pour la version de Python souhaitée
-# Vercel fournit généralement des binaires comme python3.10 et pip3.10
-if command -v "$PYTHON_VERSION" &> /dev/null; then
-    echo "Python version $PYTHON_VERSION trouvé."
-else
-    echo "Erreur: Python version $PYTHON_VERSION non trouvé. Veuillez vérifier les runtimes disponibles sur Vercel."
+# Vérifier si les binaires Python et Pip existent
+if ! command -v "$PYTHON_VERSION" &> /dev/null; then
+    echo "Erreur: Python version $PYTHON_VERSION non trouvé. Veuillez vérifier les runtimes disponibles sur Render."
     exit 1
 fi
 
-if command -v "pip3.10" &> /dev/null; then
-    echo "pip3.10 trouvé."
-else
-    echo "Erreur: pip3.10 non trouvé. Veuillez vérifier les runtimes disponibles sur Vercel."
+if ! command -v "$PIP_VERSION" &> /dev/null; then
+    echo "Erreur: $PIP_VERSION non trouvé. Veuillez vérifier les runtimes disponibles sur Render."
     exit 1
 fi
 
-# Installer les dépendances Python
-echo "Installation des dépendances Python depuis requirements.txt..."
-pip3.10 install --disable-pip-version-check --target . --upgrade -r requirements.txt
+# Installer les dépendances Python en utilisant la version spécifique de pip
+echo "Installation des dépendances Python depuis requirements.txt avec $PIP_VERSION..."
+"$PIP_VERSION" install --disable-pip-version-check --target . --upgrade -r requirements.txt
 
 if [ $? -ne 0 ]; then
     echo "Erreur lors de l'installation des dépendances Python."
@@ -46,12 +29,13 @@ fi
 
 echo "Dépendances Python installées avec succès."
 
-# Créer le répertoire de sortie si nécessaire (Vercel s'attend à ce que les fonctions soient dans un certain chemin)
-mkdir -p .vercel/output/functions/api
-
-# Copier les fichiers de l'API dans le répertoire de sortie attendu par Vercel
-# Assurez-vous que votre structure de fichiers est api/main.py et api/app/chatbot.py
-cp -r api/* .vercel/output/functions/api/
+# Créer le répertoire de sortie si nécessaire (Render s'attend à ce que les fonctions soient dans un certain chemin)
+# Note: Pour Render, le répertoire de sortie n'est pas toujours nécessaire si l'application est lancée directement.
+# Mais si vous avez une configuration de build complexe, cela peut être utile.
+# Pour une application FastAPI simple, Render s'attend à ce que le point d'entrée soit accessible.
+# Nous allons copier les fichiers de l'API dans le répertoire racine du build pour s'assurer qu'ils sont trouvés.
+mkdir -p api # S'assurer que le dossier api existe
+cp -r api/* . # Copier le contenu de api/ vers la racine du build
 
 echo "Fichiers de l'API copiés dans le répertoire de sortie."
 
