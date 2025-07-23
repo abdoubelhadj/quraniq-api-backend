@@ -3,6 +3,7 @@ uvicorn
 python-dotenv
 numpy
 faiss-cpu
+torch
+transformers
 google-generativeai
 requests
-fal-ai
