@@ -1,7 +1,20 @@
 {
   "functions": {
     "api/**/*.py": {
-      "runtime": "python@3.1.0"
+      "runtime": "python@3.10"
     }
-  }
+  },
+  "builds": [
+    {
+      "src": "api/main.py",
+      "use": "@vercel/python",
+      "config": { "runtime": "python@3.10" }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/main.py"
+    }
+  ]
 }
