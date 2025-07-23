@@ -3,8 +3,6 @@ import json
 import re
 import numpy as np
 import faiss
-# import torch # <-- Supprimer cette importation
-# from transformers import AutoTokenizer, AutoModel # <-- Supprimer cette importation
 import google.generativeai as genai
 import logging
 import requests
@@ -18,8 +16,6 @@ class QuranIQChatbot:
         self.index = None
         self.chunks = []
         self.metadata = []
-        # self.tokenizer = None # <-- Supprimer
-        # self.embedding_model = None # <-- Supprimer
         self.fal_client = None # <-- Nouveau client Fal.ai
         self.gemini_model = None
         self.working_model_name = None
@@ -58,7 +54,7 @@ class QuranIQChatbot:
             self.fal_client = FalAI(key=fal_key)
             logging.info("Fal.ai client initialized.")
 
-            # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB (inchangée) ---
+            # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB ---
             BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
             BLOB_METADATA_URL = os.getenv("BLOB_METADATA_URL")
 
@@ -83,10 +79,6 @@ class QuranIQChatbot:
             self.metadata = data["metadata"]
             logging.info("Chunks metadata downloaded and loaded.")
             # --- FIN DE LA LOGIQUE BLOB ---
-
-            # self.tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base") # <-- Supprimer
-            # self.embedding_model = AutoModel.from_pretrained("xlm-roberta-base") # <-- Supprimer
-            # logging.info("Embedding model and tokenizer loaded.") # <-- Supprimer
 
             self.gemini_model, self.working_model_name = self.find_working_gemini_model()
             if not self.gemini_model:
@@ -126,14 +118,10 @@ class QuranIQChatbot:
         """Génère l'embedding d'une requête en utilisant Fal.ai."""
         try:
             logging.info(f"Generating embedding for query: '{query[:50]}...' using Fal.ai.")
-            # Modèle d'embedding sur Fal.ai. Vous pouvez choisir un autre modèle si nécessaire.
-            # "sg161222/e5-large-v2-embedding" est un bon modèle d'embedding multilingue.
-            # Vérifiez la documentation de Fal.ai pour les modèles disponibles.
             result = self.fal_client.run(
                 "fal-ai/e5-large-v2-embedding", # Modèle d'embedding Fal.ai
                 arguments={"text": query}
             )
-            # Le résultat de Fal.ai est un dictionnaire, l'embedding est dans 'embedding'
             embedding = np.array(result["embedding"], dtype=np.float32).reshape(1, -1)
             logging.info("Query embedding generated successfully via Fal.ai.")
             return embedding
