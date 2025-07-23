@@ -3,11 +3,12 @@ import json
 import re
 import numpy as np
 import faiss
-import torch
-from transformers import AutoTokenizer, AutoModel
+# import torch # <-- Supprimer cette importation
+# from transformers import AutoTokenizer, AutoModel # <-- Supprimer cette importation
 import google.generativeai as genai
 import logging
-import requests # <-- Nouvelle importation pour les requêtes HTTP
+import requests
+from fal_ai import FalAI # <-- Nouvelle importation pour Fal.ai
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,8 +18,9 @@ class QuranIQChatbot:
         self.index = None
         self.chunks = []
         self.metadata = []
-        self.tokenizer = None
-        self.embedding_model = None
+        # self.tokenizer = None # <-- Supprimer
+        # self.embedding_model = None # <-- Supprimer
+        self.fal_client = None # <-- Nouveau client Fal.ai
         self.gemini_model = None
         self.working_model_name = None
         self.is_loaded = False
@@ -30,7 +32,6 @@ class QuranIQChatbot:
         for name in models:
             try:
                 model = genai.GenerativeModel(name)
-                # Test with a simple prompt to ensure it's callable
                 model.generate_content("ping")
                 logging.info(f"Found working Gemini model: {name}")
                 return model, name
@@ -50,7 +51,14 @@ class QuranIQChatbot:
                 raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set.")
             genai.configure(api_key=gemini_api_key)
 
-            # --- NOUVELLE LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB ---
+            # Initialize Fal.ai client
+            fal_key = os.getenv("FAL_KEY") # <-- Nouvelle variable d'environnement pour Fal.ai
+            if not fal_key:
+                raise ValueError("FAL_KEY environment variable not set. Required for embedding generation.")
+            self.fal_client = FalAI(key=fal_key)
+            logging.info("Fal.ai client initialized.")
+
+            # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB (inchangée) ---
             BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
             BLOB_METADATA_URL = os.getenv("BLOB_METADATA_URL")
 
@@ -60,8 +68,7 @@ class QuranIQChatbot:
             # Téléchargement de l'index FAISS
             logging.info(f"Downloading FAISS index from {BLOB_INDEX_URL}")
             index_response = requests.get(BLOB_INDEX_URL)
-            index_response.raise_for_status() # Lève une exception pour les codes d'erreur HTTP
-            # Écriture dans /tmp qui est le seul répertoire inscriptible dans l'environnement Lambda de Vercel
+            index_response.raise_for_status()
             with open("/tmp/index.faiss", "wb") as f:
                 f.write(index_response.content)
             self.index = faiss.read_index("/tmp/index.faiss")
@@ -75,12 +82,11 @@ class QuranIQChatbot:
             self.chunks = data["chunks"]
             self.metadata = data["metadata"]
             logging.info("Chunks metadata downloaded and loaded.")
-            # --- FIN DE LA NOUVELLE LOGIQUE ---
+            # --- FIN DE LA LOGIQUE BLOB ---
 
-
-            self.tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base")
-            self.embedding_model = AutoModel.from_pretrained("xlm-roberta-base")
-            logging.info("Embedding model and tokenizer loaded.")
+            # self.tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base") # <-- Supprimer
+            # self.embedding_model = AutoModel.from_pretrained("xlm-roberta-base") # <-- Supprimer
+            # logging.info("Embedding model and tokenizer loaded.") # <-- Supprimer
 
             self.gemini_model, self.working_model_name = self.find_working_gemini_model()
             if not self.gemini_model:
@@ -117,17 +123,22 @@ class QuranIQChatbot:
         return any(k in query.lower() for k in keywords)
 
     def generate_query_embedding(self, query):
-        """Génère l'embedding d'une requête."""
+        """Génère l'embedding d'une requête en utilisant Fal.ai."""
         try:
-            logging.info("Starting query embedding generation.")
-            inputs = self.tokenizer(query, return_tensors="pt", truncation=True, padding=True, max_length=512)
-            with torch.no_grad():
-                outputs = self.embedding_model(**inputs)
-                embedding = outputs.last_hidden_state.mean(dim=1).numpy().astype("float32")
-            logging.info("Query embedding generated successfully.")
+            logging.info(f"Generating embedding for query: '{query[:50]}...' using Fal.ai.")
+            # Modèle d'embedding sur Fal.ai. Vous pouvez choisir un autre modèle si nécessaire.
+            # "sg161222/e5-large-v2-embedding" est un bon modèle d'embedding multilingue.
+            # Vérifiez la documentation de Fal.ai pour les modèles disponibles.
+            result = self.fal_client.run(
+                "fal-ai/e5-large-v2-embedding", # Modèle d'embedding Fal.ai
+                arguments={"text": query}
+            )
+            # Le résultat de Fal.ai est un dictionnaire, l'embedding est dans 'embedding'
+            embedding = np.array(result["embedding"], dtype=np.float32).reshape(1, -1)
+            logging.info("Query embedding generated successfully via Fal.ai.")
             return embedding
         except Exception as e:
-            logging.error(f"Error generating query embedding: {e}", exc_info=True)
+            logging.error(f"Error generating query embedding with Fal.ai: {e}", exc_info=True)
             return None
 
     def search_similar_chunks(self, query, top_k=3):
