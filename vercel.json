@@ -4,15 +4,6 @@
       "runtime": "python@3.10"
     }
   },
-  "builds": [
-    {
-      "src": "api/main.py",
-      "use": "@vercel/python",
-      "config": {
-        "runtime": "python@3.10"
-      }
-    }
-  ],
   "routes": [
     {
       "src": "/(.*)",
