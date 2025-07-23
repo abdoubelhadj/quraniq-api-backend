@@ -1,5 +1,10 @@
 fastapi
 uvicorn
 python-dotenv
+numpy
+faiss-cpu
 google-generativeai
 requests
+fal-ai # Nouvelle dépendance pour Fal.ai
+# torch # Supprimé
+# transformers # Supprimé
