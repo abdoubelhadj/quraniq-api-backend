@@ -11,7 +11,7 @@ load_dotenv()
 # Init app
 app = FastAPI(
     title="QuranIQ API",
-    description="Chatbot Islamique avec Gemini + RAG",
+    description="Chatbot Islamique avec Gemini (version sans RAG)",
     version="1.0.0"
 )
 
@@ -50,7 +50,7 @@ class QueryResponse(BaseModel):
 @app.get("/")
 async def root():
     if chatbot and chatbot.is_loaded:
-        return {"message": "QuranIQ API is running", "status": "ok", "model": chatbot.working_model_name}
+        return {"message": "QuranIQ API is running (no RAG)", "status": "ok", "model": chatbot.working_model_name}
     else:
         raise HTTPException(status_code=503, detail="QuranIQ API is not fully initialized or encountered an error during startup.")
 
