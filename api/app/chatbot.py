@@ -1,24 +1,13 @@
 import os
-import json
 import re
-import numpy as np
-import faiss
-import torch
-from transformers import AutoTokenizer, AutoModel
 import google.generativeai as genai
 import logging
-import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class QuranIQChatbot:
     def __init__(self):
-        self.index = None
-        self.chunks = []
-        self.metadata = []
-        self.tokenizer = None
-        self.embedding_model = None
         self.gemini_model = None
         self.working_model_name = None
         self.is_loaded = False
@@ -39,9 +28,9 @@ class QuranIQChatbot:
         return None, None
 
     def load_components(self):
-        """Charge tous les composants nécessaires au chatbot."""
+        """Charge les composants nécessaires au chatbot (uniquement Gemini)."""
         try:
-            logging.info("🔄 Chargement du chatbot...")
+            logging.info("🔄 Chargement du chatbot (version sans RAG)...")
 
             # Get API Key from environment variable for Gemini
             gemini_api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
@@ -49,44 +38,12 @@ class QuranIQChatbot:
                 raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set.")
             genai.configure(api_key=gemini_api_key)
 
-            # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB (ou autre service de stockage) ---
-            BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
-            BLOB_METADATA_URL = os.getenv("BLOB_METADATA_URL")
-
-            if not BLOB_INDEX_URL or not BLOB_METADATA_URL:
-                raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL environment variables not set. Please configure them.")
-
-            # Téléchargement de l'index FAISS
-            logging.info(f"Downloading FAISS index from {BLOB_INDEX_URL}")
-            index_response = requests.get(BLOB_INDEX_URL)
-            index_response.raise_for_status()
-            with open("/tmp/index.faiss", "wb") as f:
-                f.write(index_response.content)
-            self.index = faiss.read_index("/tmp/index.faiss")
-            logging.info("FAISS index downloaded and loaded.")
-
-            # Téléchargement des métadonnées
-            logging.info(f"Downloading chunks metadata from {BLOB_METADATA_URL}")
-            metadata_response = requests.get(BLOB_METADATA_URL)
-            metadata_response.raise_for_status()
-            data = metadata_response.json()
-            self.chunks = data["chunks"]
-            self.metadata = data["metadata"]
-            logging.info("Chunks metadata downloaded and loaded.")
-            # --- FIN DE LA LOGIQUE BLOB ---
-
-            # Utilisation d'un modèle d'embedding plus petit et multilingue
-            # Ce modèle est beaucoup plus léger que xlm-roberta-base
-            self.tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-            self.embedding_model = AutoModel.from_pretrained("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-            logging.info("Embedding model and tokenizer loaded.")
-
             self.gemini_model, self.working_model_name = self.find_working_gemini_model()
             if not self.gemini_model:
                 raise Exception("Aucun modèle Gemini valide n'a pu être trouvé ou initialisé.")
             
             self.is_loaded = True
-            logging.info("✅ Chatbot chargé avec succès.")
+            logging.info("✅ Chatbot chargé avec succès (version sans RAG).")
         except Exception as e:
             logging.error(f"❌ Erreur lors du chargement du chatbot : {e}", exc_info=True)
             self.is_loaded = False
@@ -115,77 +72,25 @@ class QuranIQChatbot:
         ]
         return any(k in query.lower() for k in keywords)
 
-    def generate_query_embedding(self, query):
-        """Génère l'embedding d'une requête en utilisant le modèle local."""
-        try:
-            logging.info("Starting query embedding generation with local model.")
-            inputs = self.tokenizer(query, return_tensors="pt", truncation=True, padding=True, max_length=512)
-            with torch.no_grad():
-                outputs = self.embedding_model(**inputs)
-                embedding = outputs.last_hidden_state.mean(dim=1).numpy().astype("float32")
-            logging.info("Query embedding generated successfully with local model.")
-            return embedding
-        except Exception as e:
-            logging.error(f"Error generating query embedding with local model: {e}", exc_info=True)
-            return None
-
-    def search_similar_chunks(self, query, top_k=3):
-        """Recherche les chunks les plus similaires dans l'index FAISS."""
-        try:
-            logging.info("Starting search for similar chunks.")
-            emb = self.generate_query_embedding(query)
-            if emb is None:
-                logging.warning("Embedding generation failed, returning empty chunks.")
-                return []
-            
-            logging.info("Performing FAISS search.")
-            distances, indices = self.index.search(emb, top_k)
-            
-            results = []
-            for i, d in zip(indices[0], distances[0]):
-                if 0 <= i < len(self.chunks):
-                    results.append({
-                        "chunk": self.chunks[i],
-                        "source": self.metadata[i],
-                        "distance": float(d)
-                    })
-            logging.info(f"FAISS search completed. Found {len(results)} relevant chunks.")
-            return results
-        except Exception as e:
-            logging.error(f"Error searching similar chunks: {e}", exc_info=True)
-            return []
-
-    def generate_response(self, query, context_chunks, language):
-        """Génère une réponse en utilisant le modèle Gemini et le contexte RAG."""
-        context = ""
-        sources = []
-        mode = "general"
-
-        if context_chunks and context_chunks[0]['distance'] < 1.0: # Adjust threshold as needed
-            context = "\n\n".join(f"Source: {c['source']}\nContenu: {c['chunk']}" for c in context_chunks[:2])
-            sources = list(set(c['source'] for c in context_chunks[:2]))
-            mode = "hybrid"
-            logging.info("Context used for generation.")
-        else:
-            logging.info("No relevant context found or distance too high, generating general response.")
-
+    def generate_response(self, query, language):
+        """Génère une réponse en utilisant le modèle Gemini (sans contexte RAG)."""
         prompts = {
-            "fr": f"Tu es un expert de l'islam. Réponds clairement et de manière concise. Utilise les informations fournies si pertinentes.\nQuestion : {query}\n{context}",
-            "ar": f"أنت خبير في الإسلام. أجب بوضضوح وإيجاز. استخدم المعلومات المقدمة إذا كانت ذات صلة.\nالسؤال: {query}\n{context}",
-            "en": f"You are an expert in Islam. Answer clearly and concisely. Use provided information if relevant.\nQuestion: {query}\n{context}",
-            "dz": f"راك خبير فالدين. جاوب ببساطة ووضوح. استعمل المعلومات لي عطيتك إذا كانت مفيدة.\nالسؤال: {query}\n{context}",
+            "fr": f"Tu es un expert de l'islam. Réponds clairement et de manière concise.\nQuestion : {query}",
+            "ar": f"أنت خبير في الإسلام. أجب بوضضوح وإيجاز.\nالسؤال: {query}",
+            "en": f"You are an expert in Islam. Answer clearly and concisely.\nQuestion: {query}",
+            "dz": f"راك خبير فالدين. جاوب ببساطة ووضوح.\nالسؤال: {query}",
         }
 
         prompt = prompts.get(language, prompts["fr"])
-        logging.info(f"Sending prompt to Gemini model. Language: {language}, Mode: {mode}")
+        logging.info(f"Sending prompt to Gemini model. Language: {language}, Mode: general (no RAG)")
         try:
             result = self.gemini_model.generate_content(prompt)
             logging.info("Response received from Gemini.")
             return {
                 "response": result.text.strip(),
                 "language": language,
-                "sources": sources,
-                "mode": mode
+                "sources": [], # Plus de sources RAG
+                "mode": "general"
             }
         except Exception as e:
             logging.error(f"Error generating content from Gemini: {e}", exc_info=True)
@@ -197,7 +102,7 @@ class QuranIQChatbot:
             }
 
     def chat(self, query):
-        """Fonction principale de chat, gère la détection de langue, la pertinence et la génération de réponse."""
+        """Fonction principale de chat, gère la détection de langue et la génération de réponse."""
         logging.info(f"Chat request received: {query[:50]}...")
         lang = self.detect_language(query)
         logging.info(f"Detected language: {lang}")
@@ -211,9 +116,5 @@ class QuranIQChatbot:
                 "mode": "non-religious"
             }
         
-        logging.info("Religious question detected. Searching for similar chunks...")
-        chunks = self.search_similar_chunks(query)
-        logging.info(f"Found {len(chunks)} similar chunks.")
-        
-        logging.info("Generating response from Gemini model...")
-        return self.generate_response(query, chunks, lang)
+        logging.info("Religious question detected. Generating response from Gemini model (no RAG)...")
+        return self.generate_response(query, lang)
