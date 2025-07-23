@@ -3,8 +3,8 @@ import json
 import re
 import numpy as np
 import faiss
-import torch # <-- Réintroduit
-from transformers import AutoTokenizer, AutoModel # <-- Réintroduit
+import torch
+from transformers import AutoTokenizer, AutoModel
 import google.generativeai as genai
 import logging
 import requests
@@ -17,8 +17,8 @@ class QuranIQChatbot:
         self.index = None
         self.chunks = []
         self.metadata = []
-        self.tokenizer = None # <-- Réintroduit
-        self.embedding_model = None # <-- Réintroduit
+        self.tokenizer = None
+        self.embedding_model = None
         self.gemini_model = None
         self.working_model_name = None
         self.is_loaded = False
@@ -31,10 +31,10 @@ class QuranIQChatbot:
             try:
                 model = genai.GenerativeModel(name)
                 model.generate_content("ping")
-                logging.info(f"Found working Gemini model: \{name\}")
+                logging.info(f"Found working Gemini model: {name}") # <-- Correction ici
                 return model, name
             except Exception as e:
-                logging.warning(f"Model \{name\} failed to initialize or respond: \{e\}")
+                logging.warning(f"Model {name} failed to initialize or respond: {e}") # <-- Correction ici
                 continue
         return None, None
 
@@ -57,7 +57,7 @@ class QuranIQChatbot:
                 raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL environment variables not set. Please configure them.")
 
             # Téléchargement de l'index FAISS
-            logging.info(f"Downloading FAISS index from \{BLOB_INDEX_URL\}")
+            logging.info(f"Downloading FAISS index from {BLOB_INDEX_URL}") # <-- Correction ici
             index_response = requests.get(BLOB_INDEX_URL)
             index_response.raise_for_status()
             with open("/tmp/index.faiss", "wb") as f:
@@ -66,7 +66,7 @@ class QuranIQChatbot:
             logging.info("FAISS index downloaded and loaded.")
 
             # Téléchargement des métadonnées
-            logging.info(f"Downloading chunks metadata from \{BLOB_METADATA_URL\}")
+            logging.info(f"Downloading chunks metadata from {BLOB_METADATA_URL}") # <-- Correction ici
             metadata_response = requests.get(BLOB_METADATA_URL)
             metadata_response.raise_for_status()
             data = metadata_response.json()
@@ -87,7 +87,7 @@ class QuranIQChatbot:
             self.is_loaded = True
             logging.info("✅ Chatbot chargé avec succès.")
         except Exception as e:
-            logging.error(f"❌ Erreur lors du chargement du chatbot : \{e\}", exc_info=True)
+            logging.error(f"❌ Erreur lors du chargement du chatbot : {e}", exc_info=True) # <-- Correction ici
             self.is_loaded = False
 
     def detect_language(self, text):
@@ -125,7 +125,7 @@ class QuranIQChatbot:
             logging.info("Query embedding generated successfully with local model.")
             return embedding
         except Exception as e:
-            logging.error(f"Error generating query embedding with local model: \{e\}", exc_info=True)
+            logging.error(f"Error generating query embedding with local model: {e}", exc_info=True) # <-- Correction ici
             return None
 
     def search_similar_chunks(self, query, top_k=3):
@@ -143,15 +143,15 @@ class QuranIQChatbot:
             results = []
             for i, d in zip(indices[0], distances[0]):
                 if 0 <= i < len(self.chunks):
-                    results.append(\{
+                    results.append({
                         "chunk": self.chunks[i],
                         "source": self.metadata[i],
                         "distance": float(d)
-                    \})
-            logging.info(f"FAISS search completed. Found \{len(results)\} relevant chunks.")
+                    })
+            logging.info(f"FAISS search completed. Found {len(results)} relevant chunks.") # <-- Correction ici
             return results
         except Exception as e:
-            logging.error(f"Error searching similar chunks: \{e\}", exc_info=True)
+            logging.error(f"Error searching similar chunks: {e}", exc_info=True) # <-- Correction ici
             return []
 
     def generate_response(self, query, context_chunks, language):
@@ -161,58 +161,58 @@ class QuranIQChatbot:
         mode = "general"
 
         if context_chunks and context_chunks[0]['distance'] < 1.0: # Adjust threshold as needed
-            context = "\n\n".join(f"Source: \{c['source']\}\nContenu: \{c['chunk']\}" for c in context_chunks[:2])
+            context = "\n\n".join(f"Source: {c['source']}\nContenu: {c['chunk']}" for c in context_chunks[:2]) # <-- Correction ici
             sources = list(set(c['source'] for c in context_chunks[:2]))
             mode = "hybrid"
             logging.info("Context used for generation.")
         else:
             logging.info("No relevant context found or distance too high, generating general response.")
 
-        prompts = \{
-            "fr": f"Tu es un expert de l'islam. Réponds clairement et de manière concise. Utilise les informations fournies si pertinentes.\nQuestion : \{query\}\n\{context\}",
-            "ar": f"أنت خبير في الإسلام. أجب بوضضوح وإيجاز. استخدم المعلومات المقدمة إذا كانت ذات صلة.\nالسؤال: \{query\}\n\{context\}",
-            "en": f"You are an expert in Islam. Answer clearly and concisely. Use provided information if relevant.\nQuestion: \{query\}\n\{context\}",
-            "dz": f"راك خبير فالدين. جاوب ببساطة ووضوح. استعمل المعلومات لي عطيتك إذا كانت مفيدة.\nالسؤال: \{query\}\n\{context\}",
-        \}
+        prompts = {
+            "fr": f"Tu es un expert de l'islam. Réponds clairement et de manière concise. Utilise les informations fournies si pertinentes.\nQuestion : {query}\n{context}", # <-- Correction ici
+            "ar": f"أنت خبير في الإسلام. أجب بوضضوح وإيجاز. استخدم المعلومات المقدمة إذا كانت ذات صلة.\nالسؤال: {query}\n{context}", # <-- Correction ici
+            "en": f"You are an expert in Islam. Answer clearly and concisely. Use provided information if relevant.\nQuestion: {query}\n{context}", # <-- Correction ici
+            "dz": f"راك خبير فالدين. جاوب ببساطة ووضوح. استعمل المعلومات لي عطيتك إذا كانت مفيدة.\nالسؤال: {query}\n{context}", # <-- Correction ici
+        }
 
         prompt = prompts.get(language, prompts["fr"])
-        logging.info(f"Sending prompt to Gemini model. Language: \{language\}, Mode: \{mode\}")
+        logging.info(f"Sending prompt to Gemini model. Language: {language}, Mode: {mode}") # <-- Correction ici
         try:
             result = self.gemini_model.generate_content(prompt)
             logging.info("Response received from Gemini.")
-            return \{
+            return {
                 "response": result.text.strip(),
                 "language": language,
                 "sources": sources,
                 "mode": mode
-            \}
+            }
         except Exception as e:
-            logging.error(f"Error generating content from Gemini: \{e\}", exc_info=True)
-            return \{
+            logging.error(f"Error generating content from Gemini: {e}", exc_info=True) # <-- Correction ici
+            return {
                 "response": "Désolé, une erreur est survenue lors de la génération de la réponse.",
                 "language": language,
                 "sources": [],
                 "mode": "error"
-            \}
+            }
 
     def chat(self, query):
         """Fonction principale de chat, gère la détection de langue, la pertinence et la génération de réponse."""
-        logging.info(f"Chat request received: \{query[:50]\}...")
+        logging.info(f"Chat request received: {query[:50]}...") # <-- Correction ici
         lang = self.detect_language(query)
-        logging.info(f"Detected language: \{lang\}")
+        logging.info(f"Detected language: {lang}") # <-- Correction ici
 
         if not self.is_religious_question(query):
             logging.info("Non-religious question detected.")
-            return \{
+            return {
                 "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
                 "language": lang,
                 "sources": [],
                 "mode": "non-religious"
-            \}
+            }
         
         logging.info("Religious question detected. Searching for similar chunks...")
         chunks = self.search_similar_chunks(query)
-        logging.info(f"Found \{len(chunks)\} similar chunks.")
+        logging.info(f"Found {len(chunks)} similar chunks.") # <-- Correction ici
         
         logging.info("Generating response from Gemini model...")
         return self.generate_response(query, chunks, lang)
