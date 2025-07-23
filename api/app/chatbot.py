@@ -106,19 +106,33 @@ class QuranIQChatbot:
         return "fr"
 
     def is_religious_question(self, query):
-        """Vérifie si la question est de nature religieuse."""
-        keywords = [
-            'islam', 'allah', 'prophète', 'coran', 'hadith', 'prière', 'ramadan', 'hajj', 'zakat', 'shahada', 'mosquée', 'imam', 'sourate', 'ayat', 'dua', 'halal', 'haram', 'sunna', 'fiqh', 'tafsir', 'religion', 'dieu', 'muhammad', 'salat',
-            'الله', 'إسلام', 'قرآن', 'حديث', 'صلاة', 'رمضان', 'حج', 'زكاة', 'شهادة', 'مسجد', 'إمام', 'سورة', 'آية', 'دعاء', 'حلال', 'حرام', 'سنة', 'فقه', 'تفسير', 'ربي', 'محمد', 'نبي', 'رسول',
-            'واش نصلي', 'كيفاش نصلي', 'وين نصلي', 'علاش نصوم', 'كيفاش نتوضا', 'واش حلال', 'واش حرام', 'كيفاش نقرا القرآن', 'وين القبلة', 'كيفاش نحج', 'صلاتي', 'صومي', 'حجي', 'قرايتي', 'وضوئي', 'دعايا', 'تسبيحي', 'بسم الله', 'الحمد لله', 'إن شاء الله', 'ما شاء الله', 'استغفر الله', 'لا حول ولا قوة إلا بالله', 'طهارة', 'نجاسة', 'وضوء', 'غسل', 'تيمم', 'قبلة', 'مكة', 'مدينة'
-        ]
-        return any(k in query.lower() for k in keywords)
+        """Vérifie si la question est de nature religieuse en utilisant le modèle Gemini."""
+        try:
+            logging.info(f"Classifying question '{query[:50]}...' as religious or not using Gemini.")
+            classification_prompt = f"""
+            La question suivante est-elle de nature religieuse (Islam) ? Répondez uniquement par "OUI" ou "NON".
+            Question: "{query}"
+            """
+            response = self.gemini_model.generate_content(classification_prompt)
+            classification = response.text.strip().upper()
+            
+            if "OUI" in classification:
+                logging.info(f"Question '{query[:50]}...' classified as RELIGIOUS.")
+                return True
+            else:
+                logging.info(f"Question '{query[:50]}...' classified as NON-RELIGIOUS.")
+                return False
+        except Exception as e:
+            logging.error(f"Erreur lors de la classification de la question par Gemini : {e}", exc_info=True)
+            # En cas d'erreur, par défaut, nous la traitons comme non religieuse pour éviter des boucles ou des réponses non pertinentes.
+            # Ou vous pouvez choisir de la traiter comme religieuse pour toujours essayer de répondre.
+            # Pour l'instant, nous allons la traiter comme non religieuse pour éviter des coûts inutiles si l'API Gemini échoue.
+            return False
 
     def generate_query_embedding(self, query):
         """Génère l'embedding d'une requête en utilisant OpenAI."""
         try:
             logging.info("Starting query embedding generation with OpenAI.")
-            # Modèle d'embedding recommandé par OpenAI pour la plupart des cas
             model_name = "text-embedding-ada-002" 
             response = self.openai_client.embeddings.create(input=[query], model=model_name)
             embedding = np.array(response.data[0].embedding).astype("float32").reshape(1, -1)
@@ -201,8 +215,9 @@ class QuranIQChatbot:
         lang = self.detect_language(query)
         logging.info(f"Detected language: {lang}")
 
+        # Utiliser la nouvelle méthode de détection basée sur Gemini
         if not self.is_religious_question(query):
-            logging.info("Non-religious question detected.")
+            logging.info("Non-religious question detected by Gemini.")
             return {
                 "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
                 "language": lang,
@@ -210,8 +225,8 @@ class QuranIQChatbot:
                 "mode": "non-religious"
             }
         
-        logging.info("Religious question detected. Searching for similar chunks...")
-        chunks = self.search_similar_chunks(query) # La méthode search_similar_chunks appelle generate_query_embedding
+        logging.info("Religious question detected by Gemini. Searching for similar chunks...")
+        chunks = self.search_similar_chunks(query)
         logging.info(f"Found {len(chunks)} similar chunks.")
         
         logging.info("Generating response from Gemini model...")
