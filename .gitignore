@@ -35,3 +35,4 @@ venv/
 
 # Logs
 *.log
+.vercel
