@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv # Import load_dotenv
-from app.chatbot import QuranIQChatbot # Correct import path for the recommended structure
+from .app.chatbot import QuranIQChatbot # Correct import path for the recommended structure
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
