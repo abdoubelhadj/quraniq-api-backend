@@ -3,7 +3,8 @@ uvicorn
 python-dotenv
 numpy
 faiss-cpu
-torch
-transformers
 google-generativeai
-# gunicorn # Optionnel, Vercel gère le serveur ASGI avec uvicorn
+requests
+fal-ai # <-- Nouvelle dépendance pour Fal.ai
+# torch # <-- Supprimer cette ligne
+# transformers # <-- Supprimer cette ligne
