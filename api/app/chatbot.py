@@ -11,7 +11,7 @@ class QuranIQChatbot:
         self.working_model_name = "mistralai/mistral-7b-instruct"  # Modèle par défaut
         self.is_loaded = False
         self.request_count = 0
-        self.last_request_time = otten
+        self.last_request_time = 0  # Corrigé : remplacé 'otten' par 0
         self.load_components()
 
     def load_components(self):
