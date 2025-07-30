@@ -141,6 +141,7 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
+# Alternative main.py at root level for flexibility
 if __name__ == "__main__":
     import uvicorn
     
@@ -154,11 +155,5 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=port,
-        log_level="info",
-        access_log=True,
-        keep_alive=True,
-        timeout_keep_alive=30,
-        timeout_graceful_shutdown=30,
-        workers=1,
-        reload=False
+        log_level="info"
     )
