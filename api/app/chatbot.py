@@ -8,6 +8,7 @@ import logging
 import requests
 import cohere
 import gc
+import time
 from typing import List, Dict, Optional
 
 class QuranIQChatbot:
@@ -19,6 +20,8 @@ class QuranIQChatbot:
         self.working_model_name = None
         self.is_loaded = False
         self.cohere_client = None
+        self.request_count = 0
+        self.last_request_time = 0
         self.load_components()
 
     def find_working_gemini_model(self):
@@ -104,12 +107,13 @@ class QuranIQChatbot:
                     if attempt == 2:
                         raise
                     logging.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
+                    time.sleep(2)
             
             with open("/tmp/index.faiss", "wb") as f:
                 f.write(index_response.content)
             
             self.index = faiss.read_index("/tmp/index.faiss")
-            logging.info("✅ FAISS index loaded")
+            logging.info(f"✅ FAISS index loaded with {self.index.ntotal} vectors")
 
             # Download metadata with retry logic
             logging.info("📥 Downloading metadata...")
@@ -122,11 +126,19 @@ class QuranIQChatbot:
                     if attempt == 2:
                         raise
                     logging.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
+                    time.sleep(2)
             
             data = metadata_response.json()
             self.chunks = data["chunks"]
             self.metadata = data["metadata"]
             logging.info(f"✅ Metadata loaded: {len(self.chunks)} chunks")
+            
+            # Verify data consistency
+            if len(self.chunks) != len(self.metadata):
+                logging.warning(f"⚠️ Mismatch: {len(self.chunks)} chunks vs {len(self.metadata)} metadata entries")
+            
+            if self.index.ntotal != len(self.chunks):
+                logging.warning(f"⚠️ Mismatch: {self.index.ntotal} FAISS vectors vs {len(self.chunks)} chunks")
             
         except requests.RequestException as e:
             logging.error(f"❌ Network error loading from blob: {e}")
@@ -134,6 +146,26 @@ class QuranIQChatbot:
         except Exception as e:
             logging.error(f"❌ Error loading from blob: {e}")
             raise
+
+    def _rate_limit_gemini(self):
+        """Implement rate limiting for Gemini API (15 requests per minute for free tier)"""
+        current_time = time.time()
+        
+        # Reset counter every minute
+        if current_time - self.last_request_time > 60:
+            self.request_count = 0
+            self.last_request_time = current_time
+        
+        # Check if we're approaching the limit
+        if self.request_count >= 14:  # Leave 1 request as buffer
+            wait_time = 60 - (current_time - self.last_request_time)
+            if wait_time > 0:
+                logging.warning(f"⚠️ Rate limit approaching, waiting {wait_time:.1f} seconds")
+                time.sleep(wait_time)
+                self.request_count = 0
+                self.last_request_time = time.time()
+        
+        self.request_count += 1
 
     def detect_language(self, text: str) -> str:
         """Détecte la langue du texte."""
@@ -155,8 +187,25 @@ class QuranIQChatbot:
             return "fr"
 
     def is_religious_question(self, query: str) -> bool:
-        """Vérifie si la question est de nature religieuse."""
+        """Vérifie si la question est de nature religieuse avec rate limiting."""
         try:
+            # Simple keyword-based check first to avoid API calls when possible
+            religious_keywords = {
+                'ar': ['الله', 'النبي', 'القرآن', 'الإسلام', 'الصلاة', 'الحج', 'الزكاة', 'الصوم', 'محمد', 'عيسى', 'موسى', 'إبراهيم', 'داوود'],
+                'fr': ['allah', 'prophète', 'coran', 'islam', 'prière', 'hajj', 'zakat', 'jeûne', 'mohammed', 'jésus', 'moïse', 'abraham', 'david'],
+                'en': ['allah', 'prophet', 'quran', 'islam', 'prayer', 'hajj', 'zakat', 'fasting', 'muhammad', 'jesus', 'moses', 'abraham', 'david'],
+                'dz': ['ربي', 'الرسول', 'القرآن', 'الدين', 'الصلاة']
+            }
+            
+            query_lower = query.lower()
+            for lang_keywords in religious_keywords.values():
+                if any(keyword in query_lower for keyword in lang_keywords):
+                    logging.info("Question classified as RELIGIOUS (keyword match)")
+                    return True
+            
+            # If no keywords found, use Gemini API with rate limiting
+            self._rate_limit_gemini()
+            
             classification_prompt = f"""
             La question suivante est-elle de nature religieuse (Islam) ? 
             Répondez uniquement par "OUI" ou "NON".
@@ -168,12 +217,13 @@ class QuranIQChatbot:
             classification = response.text.strip().upper()
             
             is_religious = "OUI" in classification
-            logging.info(f"Question classified as {'RELIGIOUS' if is_religious else 'NON-RELIGIOUS'}")
+            logging.info(f"Question classified as {'RELIGIOUS' if is_religious else 'NON-RELIGIOUS'} (Gemini)")
             return is_religious
             
         except Exception as e:
             logging.error(f"Error in religious classification: {e}")
-            return True  # Default to True to be safe
+            # Default to True for religious keywords, False otherwise
+            return any(keyword in query.lower() for keywords in religious_keywords.values() for keyword in keywords)
 
     def generate_query_embedding(self, query: str) -> Optional[np.ndarray]:
         """Génère l'embedding d'une requête avec Cohere."""
@@ -193,32 +243,43 @@ class QuranIQChatbot:
             return None
 
     def search_similar_chunks(self, query: str, top_k: int = 3) -> List[Dict]:
-        """Recherche les chunks similaires."""
+        """Recherche les chunks similaires avec gestion d'erreurs améliorée."""
         try:
             embedding = self.generate_query_embedding(query)
             if embedding is None:
+                logging.warning("No embedding generated, returning empty results")
                 return []
 
-            distances, indices = self.index.search(embedding, top_k)
+            # Verify embedding dimensions match FAISS index
+            if hasattr(self.index, 'd') and embedding.shape[1] != self.index.d:
+                logging.error(f"Embedding dimension mismatch: {embedding.shape[1]} vs {self.index.d}")
+                return []
+
+            # Ensure top_k doesn't exceed available vectors
+            actual_k = min(top_k, self.index.ntotal, len(self.chunks))
+            
+            distances, indices = self.index.search(embedding, actual_k)
             
             results = []
             for i, d in zip(indices[0], distances[0]):
-                if 0 <= i < len(self.chunks):
+                if 0 <= i < len(self.chunks) and 0 <= i < len(self.metadata):
                     results.append({
                         "chunk": self.chunks[i],
                         "source": self.metadata[i],
                         "distance": float(d)
                     })
+                else:
+                    logging.warning(f"Invalid index {i}, skipping")
             
             logging.info(f"Found {len(results)} similar chunks")
             return results
             
         except Exception as e:
-            logging.error(f"Error searching chunks: {e}")
+            logging.error(f"Error searching chunks: {e}", exc_info=True)
             return []
 
     def generate_response(self, query: str, context_chunks: List[Dict], language: str) -> Dict:
-        """Génère une réponse avec Gemini."""
+        """Génère une réponse avec Gemini et rate limiting."""
         try:
             context = ""
             sources = []
@@ -234,47 +295,30 @@ class QuranIQChatbot:
                 sources = list(set(c['source'] for c in context_chunks[:2]))
                 mode = "hybrid"
 
-            # Language-specific prompts
+            # Apply rate limiting before making Gemini request
+            self._rate_limit_gemini()
+
+            # Language-specific prompts (shortened to reduce token usage)
             prompts = {
-                "fr": f"""Assalamu alaykum wa rahmatullahi wa barakatuh. Tu es QuranIQ, un assistant islamique expert et respectueux, spécialisé dans le Coran et les enseignements islamiques. 
-
-Réponds toujours avec une perspective islamique, en utilisant les informations fournies dans le contexte ci-dessous si elles sont pertinentes et suffisantes. Si le contexte ne contient pas la réponse directe ou complète, utilise tes connaissances générales approfondies sur l'Islam pour répondre de manière claire et concise. 
-
-Commence toujours tes réponses par une salutation islamique appropriée ou une invocation comme 'Bismillah'.
+                "fr": f"""Tu es QuranIQ, assistant islamique. Réponds brièvement et clairement.
 
 Question : {query}
+Contexte : {context[:1000] if context else "Aucun contexte spécifique"}""",
 
-Contexte fourni (si pertinent) : {context}""",
-
-                "ar": f"""السلام عليكم ورحمة الله وبركاته. أنت قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية. 
-
-أجب دائمًا من منظور إسلامي، مستخدمًا المعلومات المقدمة في السياق أدناه إذا كانت ذات صلة وكافية. إذا لم يحتوي السياق على الإجابة المباشرة أو الكاملة، فاستخدم معرفتك العامة العميقة بالإسلام للإجابة بوضوح وإيجاز. 
-
-ابدأ إجاباتك دائمًا بتحية إسلامية مناسبة أو دعاء مثل 'بسم الله'.
+                "ar": f"""أنت قرآن آي كيو، مساعد إسلامي. أجب بإيجاز ووضوح.
 
 السؤال: {query}
+السياق: {context[:1000] if context else "لا يوجد سياق محدد"}""",
 
-السياق المقدم (إذا كان ذا صلة): {context}""",
-
-                "en": f"""Assalamu alaykum wa rahmatullahi wa barakatuh. You are QuranIQ, an expert and respectful Islamic assistant, specialized in the Quran and Islamic teachings. 
-
-Always respond from an Islamic perspective, using the information provided in the context below if it is relevant and sufficient. If the context does not contain the direct or complete answer, use your deep general knowledge of Islam to answer clearly and concisely. 
-
-Always start your answers with an appropriate Islamic greeting or invocation like 'Bismillah'.
+                "en": f"""You are QuranIQ, Islamic assistant. Answer briefly and clearly.
 
 Question: {query}
+Context: {context[:1000] if context else "No specific context"}""",
 
-Provided Context (if relevant): {context}""",
-
-                "dz": f"""السلام عليكم ورحمة الله وبركاته. راك قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية. 
-
-جاوب دايما من منظور إسلامي، واستعمل المعلومات لي عطيتك فالنص التحتاني إذا كانت مفيدة وكافية. إذا النص مافيهش الإجابة المباشرة ولا الكاملة، استعمل معرفتك العامة العميقة بالإسلام باش تجاوب بوضوح واختصار. 
-
-دايما ابدا إجاباتك بتحية إسلامية مناسبة ولا دعاء كيما 'بسم الله'.
+                "dz": f"""راك قرآن آي كيو، مساعد إسلامي. جاوب بإختصار ووضوح.
 
 السؤال: {query}
-
-النص المقدم (إذا كان ذا صلة): {context}"""
+النص: {context[:1000] if context else "ماكاينش نص محدد"}"""
             }
 
             prompt = prompts.get(language, prompts["fr"])
@@ -290,15 +334,24 @@ Provided Context (if relevant): {context}""",
             
         except Exception as e:
             logging.error(f"Error generating response: {e}")
+            
+            # Fallback response based on language
+            fallback_responses = {
+                "fr": "Désolé, je rencontre des difficultés techniques. Veuillez réessayer dans quelques instants.",
+                "ar": "عذراً، أواجه صعوبات تقنية. يرجى المحاولة مرة أخرى بعد قليل.",
+                "en": "Sorry, I'm experiencing technical difficulties. Please try again in a few moments.",
+                "dz": "سامحني، راني نواجه مشاكل تقنية. عاود جرب بعد شوية."
+            }
+            
             return {
-                "response": "Désolé, une erreur est survenue lors de la génération de la réponse.",
+                "response": fallback_responses.get(language, fallback_responses["fr"]),
                 "language": language,
                 "sources": [],
                 "mode": "error"
             }
 
     def chat(self, query: str) -> Dict:
-        """Fonction principale de chat."""
+        """Fonction principale de chat avec gestion d'erreurs améliorée."""
         try:
             logging.info(f"Processing chat request: {query[:50]}...")
             
@@ -308,8 +361,15 @@ Provided Context (if relevant): {context}""",
 
             # Check if religious question
             if not self.is_religious_question(query):
+                non_religious_responses = {
+                    "fr": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
+                    "ar": "أنا قرآن آي كيو، متخصص فقط في الأسئلة الإسلامية. اسألني سؤالاً عن الإسلام.",
+                    "en": "I am QuranIQ, specialized only in Islamic questions. Ask me a question about Islam.",
+                    "dz": "أنا قرآن آي كيو، متخصص غير في الأسئلة الإسلامية. اسألني على الإسلام."
+                }
+                
                 return {
-                    "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
+                    "response": non_religious_responses.get(language, non_religious_responses["fr"]),
                     "language": language,
                     "sources": [],
                     "mode": "non-religious"
