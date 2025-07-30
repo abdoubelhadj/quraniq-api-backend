@@ -18,11 +18,19 @@ logging.basicConfig(
 # Load environment variables
 load_dotenv()
 
+# Log directory structure for debugging
+logging.info(f"Current working directory: {os.getcwd()}")
+logging.info(f"Directory contents: {os.listdir('.')}")
+if os.path.exists('api'):
+    logging.info(f"Contents of 'api/': {os.listdir('api')}")
+if os.path.exists('api/app'):
+    logging.info(f"Contents of 'api/app/': {os.listdir('api/app')}")
+
 # Import chatbot
 try:
-    from app.chatbot import QuranIQChatbot
+    from api.app.chatbot import QuranIQChatbot
     chatbot_imported = True
-    logging.info("✅ Successfully imported QuranIQChatbot from app.chatbot")
+    logging.info("✅ Successfully imported QuranIQChatbot from api.app.chatbot")
 except ImportError as e:
     logging.error(f"❌ Failed to import QuranIQChatbot: {e}")
     chatbot_imported = False
@@ -175,7 +183,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     logging.info(f"Starting server on port {port}")
     uvicorn.run(
-        "main:app",
+        "api.main:app",
         host="0.0.0.0",
         port=port,
         log_level="info",
