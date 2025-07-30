@@ -87,66 +87,6 @@ class QuranIQChatbot:
             logging.warning(f"Language detection error: {e}")
             return "fr"
 
-    def is_religious_question(self, query: str) -> bool:
-        """Check if the question is religious using OpenRouter API."""
-        if not self.is_loaded:
-            logging.warning("OpenRouter API not initialized, defaulting to non-religious classification")
-            return False
-        
-        try:
-            self._rate_limit_openrouter()
-            
-            language = self.detect_language(query)
-            prompts = {
-                "fr": f"Cette question est-elle liée à l'Islam ? Répondez uniquement par 'oui' ou 'non'. Question : {query}",
-                "ar": f"هل هذا السؤال متعلق بالإسلام؟ أجب فقط بـ 'نعم' أو 'لا'. السؤال: {query}",
-                "en": f"Is this question related to Islam? Answer only 'yes' or 'no'. Question: {query}",
-                "dz": f"هل السؤال هذا يخص الإسلام؟ جاوب غير بـ 'نعم' أو 'لا'. السؤال: {query}"
-            }
-            
-            prompt = prompts.get(language, prompts["en"])
-            
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "HTTP-Referer": "https://quraniq-api-backend.onrender.com",
-                "X-Title": "QuranIQ API"
-            }
-            data = {
-                "model": self.working_model_name,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            
-            for attempt in range(3):
-                try:
-                    response = requests.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers,
-                        json=data,
-                        timeout=10
-                    )
-                    response.raise_for_status()
-                    response_json = response.json()
-                    if "choices" in response_json and response_json["choices"]:
-                        answer = response_json["choices"][0]["message"]["content"].strip().lower()
-                        logging.info(f"Question classified as {'RELIGIOUS' if answer in ['yes', 'oui', 'نعم'] else 'NON-RELIGIOUS'} (OpenRouter response: {answer})")
-                        return answer in ['yes', 'oui', 'نعم']
-                    else:
-                        raise Exception("Invalid response from OpenRouter API")
-                except requests.exceptions.RequestException as e:
-                    if response and response.status_code == 429:
-                        wait_time = 8
-                        logging.warning(f"Rate limit hit in is_religious_question, retrying in {wait_time} seconds (attempt {attempt + 1})")
-                        time.sleep(wait_time)
-                    else:
-                        raise
-            
-            logging.error("Max retries reached for OpenRouter API in is_religious_question")
-            return False  # Fallback to non-religious if API fails
-            
-        except Exception as e:
-            logging.error(f"Error classifying question: {e}")
-            return False  # Fallback to non-religious if API fails
-
     def generate_response(self, query: str, language: str) -> Dict:
         """Generate a response using OpenRouter API with retry logic."""
         if not self.is_loaded:
@@ -168,21 +108,21 @@ class QuranIQChatbot:
             self._rate_limit_openrouter()
             
             prompts = {
-                "fr": f"""Tu es QuranIQ, assistant islamique. Réponds brièvement et clairement en français.
+                "fr": f"""Tu es QuranIQ, un érudit musulman expert en Islam, tafsir du Coran, et sciences islamiques. Réponds en français, de manière précise, concise et respectueuse, en t'appuyant sur le Coran, la Sunna, et les tafsirs authentiques (comme Ibn Kathir ou Al-Tabari). Défends l'Islam avec sagesse et respect si la question le nécessite. Si la question n'est pas liée à l'Islam, explique poliment que tu es spécialisé dans les questions islamiques et invite à poser une question sur l'Islam.
 Question : {query}
 Contexte : Aucun contexte spécifique""",
-                "ar": f"""أنت قرآن آي كيو، مساعد إسلامي. أجب بإيجاز ووضوح بالعربية.
+                "ar": f"""أنت قرآن آي كيو، عالم مسلم متخصص في الإسلام، تفسير القرآن، والعلوم الإسلامية. أجب بالعربية الفصحى، بإيجاز ودقة واحترام، مستندًا إلى القرآن، السنة، والتفاسير الموثوقة (مثل ابن كثير أو الطبري). دافع عن الإسلام بحكمة واحترام إذا اقتضت السؤال. إذا لم يكن السؤال متعلقًا بالإسلام، اشرح بأدب أنك متخصص في الأسئلة الإسلامية وادعُ إلى طرح سؤال عن الإسلام.
 السؤال: {query}
 السياق: لا يوجد سياق محدد""",
-                "en": f"""You are QuranIQ, Islamic assistant. Answer briefly and clearly in English.
+                "en": f"""You are QuranIQ, a Muslim scholar expert in Islam, Quranic exegesis (tafsir), and Islamic sciences. Answer in English, precisely, concisely, and respectfully, relying on the Quran, Sunnah, and authentic tafsirs (e.g., Ibn Kathir or Al-Tabari). Defend Islam with wisdom and respect if the question requires it. If the question is not related to Islam, politely explain that you specialize in Islamic questions and invite the user to ask about Islam.
 Question: {query}
 Context: No specific context""",
-                "dz": f"""راك قرآن آي كيو، مساعد إسلامي. جاوب بإختصار ووضوح بالدارجة الجزائرية.
+                "dz": f"""راك قرآن آي كيو، عالم مسلم خبير في الإسلام، تفسير القرآن، والعلوم الإسلامية. جاوب بالدارجة الجزائرية، بإختصار ودقة وإحترام، معتمد على القرآن، السنة، وتفاسير موثوقة (زي ابن كثير ولا الطبري). دافع على الإسلام بحكمة وإحترام إذا كان السؤال يحتاج. إذا السؤال ما يخصش الإسلام، شرح بلباقة بلي راك متخصص في الأسئلة الإسلامية وادعي الشخص باش يسأل على الإسلام.
 السؤال: {query}
 النص: ماكاينش نص محدد"""
             }
             
-            prompt = prompts.get(language, prompts["fr"])
+            prompt = prompts.get(language, prompts["en"])
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -247,21 +187,6 @@ Context: No specific context""",
             
             language = self.detect_language(query)
             logging.info(f"Detected language: {language} (took {time.time() - start_time:.2f}s)")
-            
-            if not self.is_religious_question(query):
-                non_religious_responses = {
-                    "fr": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
-                    "ar": "أنا قرآن آي كيو، متخصص فقط في الأسئلة الإسلامية. اسألني سؤالاً عن الإسلام.",
-                    "en": "I am QuranIQ, specialized only in Islamic questions. Ask me a question about Islam.",
-                    "dz": "أنا قرآن آي كيو، متخصص غير في الأسئلة الإسلامية. اسألني على الإسلام."
-                }
-                logging.info(f"Total request processing time: {time.time() - start_time:.2f}s")
-                return {
-                    "response": non_religious_responses.get(language, non_religious_responses["fr"]),
-                    "language": language,
-                    "sources": [],
-                    "mode": "non-religious"
-                }
             
             response = self.generate_response(query, language)
             logging.info(f"Total request processing time: {time.time() - start_time:.2f}s")
