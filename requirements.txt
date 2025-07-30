@@ -5,7 +5,7 @@ numpy
 faiss-cpu
 google-generativeai
 requests
-openai # Nouvelle dépendance pour OpenAI
+cohere
 # fal-ai # Supprimé
 # torch # Supprimé
 # transformers # Supprimé
