@@ -2,72 +2,62 @@ import os
 import re
 import logging
 import time
-import google.generativeai as genai
+import requests
 from typing import Dict
 
 class QuranIQChatbot:
     def __init__(self):
-        self.gemini_model = None
-        self.working_model_name = None
+        self.api_key = None
+        self.working_model_name = "mistralai/mistral-7b-instruct"  # Modèle par défaut
         self.is_loaded = False
         self.request_count = 0
-        self.last_request_time = 0
+        self.last_request_time = otten
         self.load_components()
-
-    def find_working_gemini_model(self):
-        """Find a working Gemini model."""
-        models = [
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-pro"
-        ]
-        
-        for name in models:
-            try:
-                model = genai.GenerativeModel(name)
-                test_response = model.generate_content("ping")
-                if test_response and test_response.text:
-                    logging.info(f"✅ Found working Gemini model: {name}")
-                    return model, name
-            except Exception as e:
-                logging.warning(f"⚠️ Model {name} failed: {str(e)[:100]}...")
-                continue
-        
-        logging.error("❌ No working Gemini model found")
-        return None, None
 
     def load_components(self):
         """Load necessary components for the chatbot."""
         try:
             logging.info("🔄 Loading QuranIQ chatbot components...")
             
-            gemini_api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
-            if not gemini_api_key:
-                raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set")
+            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            if not self.api_key:
+                raise ValueError("OPENROUTER_API_KEY environment variable not set")
             
-            genai.configure(api_key=gemini_api_key)
-            logging.info("✅ Gemini API configured")
-            
-            self.gemini_model, self.working_model_name = self.find_working_gemini_model()
-            if not self.gemini_model:
-                raise Exception("No working Gemini model found")
-            
-            self.is_loaded = True
-            logging.info("✅ QuranIQ chatbot loaded successfully")
+            # Test API connectivity
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://quraniq-api-backend.onrender.com",
+                "X-Title": "QuranIQ API"
+            }
+            data = {
+                "model": self.working_model_name,
+                "messages": [{"role": "user", "content": "ping"}]
+            }
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+            response.raise_for_status()
+            if response.json().get("choices"):
+                logging.info(f"✅ OpenRouter API configured with model {self.working_model_name}")
+                self.is_loaded = True
+            else:
+                logging.warning("⚠️ OpenRouter API response invalid, proceeding in degraded mode")
             
         except Exception as e:
             logging.error(f"❌ Error loading chatbot: {e}", exc_info=True)
             self.is_loaded = False
-            raise
 
-    def _rate_limit_gemini(self):
-        """Implement rate limiting for Gemini API (15 requests per minute for free tier)."""
+    def _rate_limit_openrouter(self):
+        """Implement rate limiting for OpenRouter API (adjust based on OpenRouter limits)."""
         current_time = time.time()
         if current_time - self.last_request_time > 60:
             self.request_count = 0
             self.last_request_time = current_time
         
-        if self.request_count >= 14:
+        if self.request_count >= 14:  # Ajuster selon les limites d'OpenRouter
             wait_time = 60 - (current_time - self.last_request_time)
             if wait_time > 0:
                 logging.warning(f"⚠️ Rate limit approaching, waiting {wait_time:.1f} seconds")
@@ -76,7 +66,7 @@ class QuranIQChatbot:
                 self.last_request_time = time.time()
         
         self.request_count += 1
-        logging.info(f"Gemini API request count: {self.request_count}/50 (daily limit)")
+        logging.info(f"OpenRouter API request count: {self.request_count}")
 
     def detect_language(self, text: str) -> str:
         """Detect the language of the text."""
@@ -116,45 +106,80 @@ class QuranIQChatbot:
         return False
 
     def generate_response(self, query: str, language: str) -> Dict:
-        """Generate a response using Gemini with retry logic."""
+        """Generate a response using OpenRouter API with retry logic."""
+        if not self.is_loaded:
+            logging.error("OpenRouter API not initialized")
+            fallback_responses = {
+                "fr": "Désolé, le service est temporairement indisponible. Veuillez réessayer plus tard.",
+                "ar": "عذراً، الخدمة غير متوفرة مؤقتاً. يرجى المحاولة لاحقاً.",
+                "en": "Sorry, the service is temporarily unavailable. Please try again later.",
+                "dz": "سامحني، الخدمة مش متوفرة مؤقتاً. عاود جرب بعد."
+            }
+            return {
+                "response": fallback_responses.get(language, fallback_responses["fr"]),
+                "language": language,
+                "sources": [],
+                "mode": "error"
+            }
+        
         try:
-            self._rate_limit_gemini()
+            self._rate_limit_openrouter()
             
             prompts = {
-                "fr": f"""Tu es QuranIQ, assistant islamique. Réponds brièvement et clairement.
+                "fr": f"""Tu es QuranIQ, assistant islamique. Réponds brièvement et clairement en français.
 Question : {query}
 Contexte : Aucun contexte spécifique""",
-                "ar": f"""أنت قرآن آي كيو، مساعد إسلامي. أجب بإيجاز ووضوح.
+                "ar": f"""أنت قرآن آي كيو، مساعد إسلامي. أجب بإيجاز ووضوح بالعربية.
 السؤال: {query}
 السياق: لا يوجد سياق محدد""",
-                "en": f"""You are QuranIQ, Islamic assistant. Answer briefly and clearly.
+                "en": f"""You are QuranIQ, Islamic assistant. Answer briefly and clearly in English.
 Question: {query}
 Context: No specific context""",
-                "dz": f"""راك قرآن آي كيو، مساعد إسلامي. جاوب بإختصار ووضوح.
+                "dz": f"""راك قرآن آي كيو، مساعد إسلامي. جاوب بإختصار ووضوح بالدارجة الجزائرية.
 السؤال: {query}
 النص: ماكاينش نص محدد"""
             }
             
             prompt = prompts.get(language, prompts["fr"])
             
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://quraniq-api-backend.onrender.com",
+                "X-Title": "QuranIQ API"
+            }
+            data = {
+                "model": self.working_model_name,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            
             for attempt in range(3):
                 try:
-                    result = self.gemini_model.generate_content(prompt)
-                    return {
-                        "response": result.text.strip(),
-                        "language": language,
-                        "sources": [],
-                        "mode": "general"
-                    }
-                except Exception as e:
-                    if "429" in str(e):
+                    response = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=data,
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    response_json = response.json()
+                    if "choices" in response_json and response_json["choices"]:
+                        return {
+                            "response": response_json["choices"][0]["message"]["content"].strip(),
+                            "language": language,
+                            "sources": [],
+                            "mode": "general"
+                        }
+                    else:
+                        raise Exception("Invalid response from OpenRouter API")
+                except requests.exceptions.RequestException as e:
+                    if response and response.status_code == 429:
                         wait_time = 8
                         logging.warning(f"Rate limit hit, retrying in {wait_time} seconds (attempt {attempt + 1})")
                         time.sleep(wait_time)
                     else:
                         raise
             
-            logging.error("Max retries reached for Gemini API")
+            logging.error("Max retries reached for OpenRouter API")
             raise Exception("Rate limit exceeded after retries")
             
         except Exception as e:
