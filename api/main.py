@@ -1,28 +1,30 @@
 import os
 import logging
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from contextlib import asynccontextmanager
-import asyncio
-import signal
 import sys
+from contextlib import asynccontextmanager
+import signal
+import asyncio
 
 # Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Import after logging configuration
-from app.chatbot import QuranIQChatbot
+# Import chatbot after environment setup
+try:
+    from app.chatbot import QuranIQChatbot
+except ImportError:
+    from chatbot import QuranIQChatbot
 
 # Global chatbot instance
 chatbot = None
@@ -48,7 +50,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logging.info("🔄 Shutting down QuranIQ API...")
     if chatbot:
-        # Clean up resources if needed
         chatbot = None
     logging.info("✅ QuranIQ API shutdown complete")
 
@@ -63,7 +64,7 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Be more restrictive in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"]
 )
@@ -91,7 +92,7 @@ async def health_check():
         return HealthResponse(
             status="healthy",
             message="QuranIQ API is running",
-            model=chatbot.working_model_name
+            model=getattr(chatbot, 'working_model_name', 'unknown')
         )
     else:
         raise HTTPException(
@@ -126,7 +127,6 @@ async def chat_endpoint(req: QueryRequest):
             detail="An error occurred while processing your request"
         )
 
-# Keep-alive endpoint
 @app.get("/ping")
 async def ping():
     """Simple ping endpoint to keep the service alive"""
@@ -147,6 +147,8 @@ if __name__ == "__main__":
     # Get port from environment (Render sets PORT automatically)
     port = int(os.getenv("PORT", 10000))
     
+    logging.info(f"Starting server on port {port}")
+    
     # Run with proper configuration for production
     uvicorn.run(
         "main:app",
@@ -154,13 +156,9 @@ if __name__ == "__main__":
         port=port,
         log_level="info",
         access_log=True,
-        # Keep connections alive
         keep_alive=True,
-        # Increase timeouts
         timeout_keep_alive=30,
         timeout_graceful_shutdown=30,
-        # Worker configuration
-        workers=1,  # Single worker to avoid memory issues
-        # Reload only in development
+        workers=1,
         reload=False
     )
