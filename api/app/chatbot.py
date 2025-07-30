@@ -6,10 +6,9 @@ import faiss
 import google.generativeai as genai
 import logging
 import requests
-import cohere  # Remplace OpenAI par Cohere
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import cohere
+import gc
+from typing import List, Dict, Optional
 
 class QuranIQChatbot:
     def __init__(self):
@@ -19,152 +18,179 @@ class QuranIQChatbot:
         self.gemini_model = None
         self.working_model_name = None
         self.is_loaded = False
-        self.cohere_client = None  # Client Cohere
+        self.cohere_client = None
         self.load_components()
 
     def find_working_gemini_model(self):
         """Trouve un modèle Gemini fonctionnel en testant les modèles disponibles."""
-        models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
+        models = [
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro", 
+            "gemini-pro", 
+            "models/gemini-1.5-flash", 
+            "models/gemini-1.5-pro", 
+            "models/gemini-pro"
+        ]
+        
         for name in models:
             try:
                 model = genai.GenerativeModel(name)
-                model.generate_content("ping")
-                logging.info(f"Found working Gemini model: {name}")
-                return model, name
+                # Test with a simple prompt
+                test_response = model.generate_content("ping")
+                if test_response and test_response.text:
+                    logging.info(f"✅ Found working Gemini model: {name}")
+                    return model, name
             except Exception as e:
-                logging.warning(f"Model {name} failed to initialize or respond: {e}")
+                logging.warning(f"⚠️ Model {name} failed: {str(e)[:100]}...")
                 continue
+        
+        logging.error("❌ No working Gemini model found")
         return None, None
 
     def load_components(self):
         """Charge tous les composants nécessaires au chatbot."""
         try:
-            logging.info("🔄 Chargement du chatbot (avec RAG via Cohere Embeddings)...")
+            logging.info("🔄 Loading QuranIQ chatbot components...")
             
-            # Get API Key from environment variable for Gemini
+            # Configure Gemini API
             gemini_api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
             if not gemini_api_key:
-                raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set.")
+                raise ValueError("GOOGLE_GENERATIVE_AI_API_KEY environment variable not set")
+            
             genai.configure(api_key=gemini_api_key)
+            logging.info("✅ Gemini API configured")
 
-            # Initialiser le client Cohere pour les embeddings
+            # Initialize Cohere client
             cohere_api_key = os.getenv("COHERE_API_KEY")
             if not cohere_api_key:
-                raise ValueError("COHERE_API_KEY environment variable not set. Please configure it for Cohere embeddings.")
+                raise ValueError("COHERE_API_KEY environment variable not set")
             
             self.cohere_client = cohere.Client(cohere_api_key)
-            logging.info("Cohere client initialized for embeddings.")
+            logging.info("✅ Cohere client initialized")
 
-            # --- LOGIQUE POUR TÉLÉCHARGER DEPUIS VERCEL BLOB ---
-            BLOB_INDEX_URL = os.getenv("BLOB_INDEX_URL")
-            BLOB_METADATA_URL = os.getenv("BLOB_METADATA_URL")
-            if not BLOB_INDEX_URL or not BLOB_METADATA_URL:
-                raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL environment variables not set. Please configure them.")
+            # Load FAISS index and metadata from Vercel Blob
+            self._load_from_blob()
+            
+            # Find working Gemini model
+            self.gemini_model, self.working_model_name = self.find_working_gemini_model()
+            if not self.gemini_model:
+                raise Exception("No working Gemini model found")
 
-            # Téléchargement de l'index FAISS
-            logging.info(f"Downloading FAISS index from {BLOB_INDEX_URL}")
-            index_response = requests.get(BLOB_INDEX_URL)
+            self.is_loaded = True
+            logging.info("✅ QuranIQ chatbot loaded successfully")
+            
+            # Force garbage collection to free memory
+            gc.collect()
+            
+        except Exception as e:
+            logging.error(f"❌ Error loading chatbot: {e}", exc_info=True)
+            self.is_loaded = False
+            raise
+
+    def _load_from_blob(self):
+        """Load FAISS index and metadata from Vercel Blob"""
+        blob_index_url = os.getenv("BLOB_INDEX_URL")
+        blob_metadata_url = os.getenv("BLOB_METADATA_URL")
+        
+        if not blob_index_url or not blob_metadata_url:
+            raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL not set")
+
+        try:
+            # Download FAISS index
+            logging.info("📥 Downloading FAISS index...")
+            index_response = requests.get(blob_index_url, timeout=60)
             index_response.raise_for_status()
+            
             with open("/tmp/index.faiss", "wb") as f:
                 f.write(index_response.content)
+            
             self.index = faiss.read_index("/tmp/index.faiss")
-            logging.info("FAISS index downloaded and loaded.")
+            logging.info("✅ FAISS index loaded")
 
-            # Téléchargement des métadonnées
-            logging.info(f"Downloading chunks metadata from {BLOB_METADATA_URL}")
-            metadata_response = requests.get(BLOB_METADATA_URL)
+            # Download metadata
+            logging.info("📥 Downloading metadata...")
+            metadata_response = requests.get(blob_metadata_url, timeout=60)
             metadata_response.raise_for_status()
+            
             data = metadata_response.json()
             self.chunks = data["chunks"]
             self.metadata = data["metadata"]
-            logging.info("Chunks metadata downloaded and loaded.")
-
-            # --- FIN DE LA LOGIQUE BLOB ---
-
-            self.gemini_model, self.working_model_name = self.find_working_gemini_model()
-            if not self.gemini_model:
-                raise Exception("Aucun modèle Gemini valide n'a pu être trouvé ou initialisé.")
-                        
-            self.is_loaded = True
-            logging.info("✅ Chatbot chargé avec succès (avec RAG via Cohere Embeddings).")
+            logging.info(f"✅ Metadata loaded: {len(self.chunks)} chunks")
             
+        except requests.RequestException as e:
+            logging.error(f"❌ Network error loading from blob: {e}")
+            raise
         except Exception as e:
-            logging.error(f"❌ Erreur lors du chargement du chatbot : {e}", exc_info=True)
-            self.is_loaded = False
+            logging.error(f"❌ Error loading from blob: {e}")
+            raise
 
-    def detect_language(self, text):
+    def detect_language(self, text: str) -> str:
         """Détecte la langue du texte (fr, ar, en, dz)."""
-        arabic_chars = re.compile(r'[\u0600-\u06FF]')
-        if arabic_chars.search(text):
-            algerian_words = ['واش', 'كيفاش', 'وين', 'علاش', 'بصح', 'برك', 'حنا', 'نتوما', 'هوما', 'راني', 'راك', 'راها', 'تاع', 'بزاف', 'شوية']
-            if any(word in text for word in algerian_words):
-                return "dz"
-            return "ar"
-                
-        english_words = ['what', 'how', 'why', 'when', 'where', 'who', 'is', 'are', 'the', 'and', 'or', 'can', 'should', 'must', 'do', 'did']
-        if any(word in text.lower().split() for word in english_words):
-            return "en"
-                
-        return "fr"
-
-    def is_religious_question(self, query):
-        """Vérifie si la question est de nature religieuse en utilisant le modèle Gemini."""
         try:
-            logging.info(f"Classifying question '{query[:50]}...' as religious or not using Gemini.")
+            arabic_chars = re.compile(r'[\u0600-\u06FF]')
+            if arabic_chars.search(text):
+                algerian_words = ['واش', 'كيفاش', 'وين', 'علاش', 'بصح', 'برك', 'حنا', 'نتوما', 'هوما', 'راني', 'راك', 'راها', 'تاع', 'بزاف', 'شوية']
+                if any(word in text for word in algerian_words):
+                    return "dz"
+                return "ar"
+            
+            english_words = ['what', 'how', 'why', 'when', 'where', 'who', 'is', 'are', 'the', 'and', 'or', 'can', 'should', 'must', 'do', 'did']
+            if any(word in text.lower().split() for word in english_words):
+                return "en"
+            
+            return "fr"
+        except Exception as e:
+            logging.warning(f"Language detection error: {e}")
+            return "fr"  # Default to French
+
+    def is_religious_question(self, query: str) -> bool:
+        """Vérifie si la question est de nature religieuse."""
+        try:
             classification_prompt = f"""
-            La question suivante est-elle de nature religieuse (Islam) ? Répondez uniquement par "OUI" ou "NON".
+            La question suivante est-elle de nature religieuse (Islam) ? 
+            Répondez uniquement par "OUI" ou "NON".
+            
             Question: "{query}"
             """
+            
             response = self.gemini_model.generate_content(classification_prompt)
             classification = response.text.strip().upper()
-                        
-            if "OUI" in classification:
-                logging.info(f"Question '{query[:50]}...' classified as RELIGIOUS.")
-                return True
-            else:
-                logging.info(f"Question '{query[:50]}...' classified as NON-RELIGIOUS.")
-                return False
+            
+            is_religious = "OUI" in classification
+            logging.info(f"Question classified as {'RELIGIOUS' if is_religious else 'NON-RELIGIOUS'}")
+            return is_religious
+            
         except Exception as e:
-            logging.error(f"Erreur lors de la classification de la question par Gemini : {e}", exc_info=True)
-            return False
+            logging.error(f"Error in religious classification: {e}")
+            # Default to True to be safe
+            return True
 
-    def generate_query_embedding(self, query):
-        """Génère l'embedding d'une requête en utilisant Cohere."""
+    def generate_query_embedding(self, query: str) -> Optional[np.ndarray]:
+        """Génère l'embedding d'une requête avec Cohere."""
         try:
-            logging.info("Starting query embedding generation with Cohere.")
-            
-            # Utiliser le modèle d'embedding de Cohere
-            # Options: 'embed-english-v3.0', 'embed-multilingual-v3.0', 'embed-english-light-v3.0'
-            model_name = "embed-multilingual-v3.0"  # Supporte l'arabe et le français
-            
             response = self.cohere_client.embed(
                 texts=[query],
-                model=model_name,
-                input_type="search_query"  # Optimisé pour les requêtes de recherche
+                model="embed-multilingual-v3.0",
+                input_type="search_query"
             )
             
-            # Extraire l'embedding
             embedding = np.array(response.embeddings[0]).astype("float32").reshape(1, -1)
-            
-            logging.info(f"Query embedding generated successfully with Cohere. Shape: {embedding.shape}")
+            logging.info(f"Query embedding generated: {embedding.shape}")
             return embedding
             
         except Exception as e:
-            logging.error(f"Error generating query embedding with Cohere: {e}", exc_info=True)
+            logging.error(f"Error generating embedding: {e}")
             return None
 
-    def search_similar_chunks(self, query, top_k=3):
-        """Recherche les chunks les plus similaires dans l'index FAISS."""
+    def search_similar_chunks(self, query: str, top_k: int = 3) -> List[Dict]:
+        """Recherche les chunks similaires."""
         try:
-            logging.info("Starting search for similar chunks.")
-            emb = self.generate_query_embedding(query)
-            if emb is None:
-                logging.warning("Embedding generation failed, returning empty chunks.")
+            embedding = self.generate_query_embedding(query)
+            if embedding is None:
                 return []
-                        
-            logging.info("Performing FAISS search.")
-            distances, indices = self.index.search(emb, top_k)
-                        
+
+            distances, indices = self.index.search(embedding, top_k)
+            
             results = []
             for i, d in zip(indices[0], distances[0]):
                 if 0 <= i < len(self.chunks):
@@ -174,107 +200,86 @@ class QuranIQChatbot:
                         "distance": float(d)
                     })
             
-            logging.info(f"FAISS search completed. Found {len(results)} relevant chunks.")
+            logging.info(f"Found {len(results)} similar chunks")
             return results
             
         except Exception as e:
-            logging.error(f"Error searching similar chunks: {e}", exc_info=True)
+            logging.error(f"Error searching chunks: {e}")
             return []
 
-    def generate_response(self, query, context_chunks, language):
-        """Génère une réponse en utilisant le modèle Gemini et le contexte RAG."""
-        context = ""
-        sources = []
-        mode = "general"
-        
-        # Seuil ajusté pour Cohere embeddings
-        distance_threshold = 0.7  # Ajustez selon vos tests avec Cohere
-        
-        if context_chunks and context_chunks[0]['distance'] < distance_threshold:
-            context = "\n\n".join(f"Source: {c['source']}\nContenu: {c['chunk']}" for c in context_chunks[:2])
-            sources = list(set(c['source'] for c in context_chunks[:2]))
-            mode = "hybrid"
-            logging.info("Context used for generation.")
-        else:
-            logging.info("No relevant context found or distance too high, generating general response.")
+    def generate_response(self, query: str, context_chunks: List[Dict], language: str) -> Dict:
+        """Génère une réponse avec Gemini."""
+        try:
+            context = ""
+            sources = []
+            mode = "general"
+            
+            # Use context if relevant
+            distance_threshold = 0.7
+            if context_chunks and context_chunks[0]['distance'] < distance_threshold:
+                context = "\n\n".join(
+                    f"Source: {c['source']}\nContenu: {c['chunk']}" 
+                    for c in context_chunks[:2]
+                )
+                sources = list(set(c['source'] for c in context_chunks[:2]))
+                mode = "hybrid"
 
-        # Prompts améliorés pour une persona islamique et une meilleure utilisation du RAG
-        prompts = {
-            "fr": f"""Assalamu alaykum wa rahmatullahi wa barakatuh.
+            # Language-specific prompts
+            prompts = {
+                "fr": f"""Assalamu alaykum wa rahmatullahi wa barakatuh. Tu es QuranIQ, un assistant islamique expert et respectueux, spécialisé dans le Coran et les enseignements islamiques. 
 
-Tu es QuranIQ, un assistant islamique expert et respectueux, spécialisé dans le Coran et les enseignements islamiques.
-
-Réponds toujours avec une perspective islamique, en utilisant les informations fournies dans le contexte ci-dessous si elles sont pertinentes et suffisantes.
-
-Si le contexte ne contient pas la réponse directe ou complète, utilise tes connaissances générales approfondies sur l'Islam pour répondre de manière claire et concise.
+Réponds toujours avec une perspective islamique, en utilisant les informations fournies dans le contexte ci-dessous si elles sont pertinentes et suffisantes. Si le contexte ne contient pas la réponse directe ou complète, utilise tes connaissances générales approfondies sur l'Islam pour répondre de manière claire et concise. 
 
 Commence toujours tes réponses par une salutation islamique appropriée ou une invocation comme 'Bismillah'.
 
 Question : {query}
 
-Contexte fourni (si pertinent) :
-{context}""",
+Contexte fourni (si pertinent) : {context}""",
 
-            "ar": f"""السلام عليكم ورحمة الله وبركاته.
+                "ar": f"""السلام عليكم ورحمة الله وبركاته. أنت قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية. 
 
-أنت قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية.
-
-أجب دائمًا من منظور إسلامي، مستخدمًا المعلومات المقدمة في السياق أدناه إذا كانت ذات صلة وكافية.
-
-إذا لم يحتوي السياق على الإجابة المباشرة أو الكاملة، فاستخدم معرفتك العامة العميقة بالإسلام للإجابة بوضوح وإيجاز.
+أجب دائمًا من منظور إسلامي، مستخدمًا المعلومات المقدمة في السياق أدناه إذا كانت ذات صلة وكافية. إذا لم يحتوي السياق على الإجابة المباشرة أو الكاملة، فاستخدم معرفتك العامة العميقة بالإسلام للإجابة بوضوح وإيجاز. 
 
 ابدأ إجاباتك دائمًا بتحية إسلامية مناسبة أو دعاء مثل 'بسم الله'.
 
 السؤال: {query}
 
-السياق المقدم (إذا كان ذا صلة):
-{context}""",
+السياق المقدم (إذا كان ذا صلة): {context}""",
 
-            "en": f"""Assalamu alaykum wa rahmatullahi wa barakatuh.
+                "en": f"""Assalamu alaykum wa rahmatullahi wa barakatuh. You are QuranIQ, an expert and respectful Islamic assistant, specialized in the Quran and Islamic teachings. 
 
-You are QuranIQ, an expert and respectful Islamic assistant, specialized in the Quran and Islamic teachings.
-
-Always respond from an Islamic perspective, using the information provided in the context below if it is relevant and sufficient.
-
-If the context does not contain the direct or complete answer, use your deep general knowledge of Islam to answer clearly and concisely.
+Always respond from an Islamic perspective, using the information provided in the context below if it is relevant and sufficient. If the context does not contain the direct or complete answer, use your deep general knowledge of Islam to answer clearly and concisely. 
 
 Always start your answers with an appropriate Islamic greeting or invocation like 'Bismillah'.
 
 Question: {query}
 
-Provided Context (if relevant):
-{context}""",
+Provided Context (if relevant): {context}""",
 
-            "dz": f"""السلام عليكم ورحمة الله وبركاته.
+                "dz": f"""السلام عليكم ورحمة الله وبركاته. راك قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية. 
 
-راك قرآن آي كيو، مساعد إسلامي خبير ومحترم، متخصص في القرآن الكريم والتعاليم الإسلامية.
-
-جاوب دايما من منظور إسلامي، واستعمل المعلومات لي عطيتك فالنص التحتاني إذا كانت مفيدة وكافية.
-
-إذا النص مافيهش الإجابة المباشرة ولا الكاملة، استعمل معرفتك العامة العميقة بالإسلام باش تجاوب بوضوح واختصار.
+جاوب دايما من منظور إسلامي، واستعمل المعلومات لي عطيتك فالنص التحتاني إذا كانت مفيدة وكافية. إذا النص مافيهش الإجابة المباشرة ولا الكاملة، استعمل معرفتك العامة العميقة بالإسلام باش تجاوب بوضوح واختصار. 
 
 دايما ابدا إجاباتك بتحية إسلامية مناسبة ولا دعاء كيما 'بسم الله'.
 
 السؤال: {query}
 
-النص المقدم (إذا كان ذا صلة):
-{context}""",
-        }
+النص المقدم (إذا كان ذا صلة): {context}"""
+            }
 
-        prompt = prompts.get(language, prompts["fr"])
-        logging.info(f"Sending prompt to Gemini model. Language: {language}, Mode: {mode}")
-        
-        try:
+            prompt = prompts.get(language, prompts["fr"])
+            
             result = self.gemini_model.generate_content(prompt)
-            logging.info("Response received from Gemini.")
+            
             return {
                 "response": result.text.strip(),
                 "language": language,
                 "sources": sources,
                 "mode": mode
             }
+            
         except Exception as e:
-            logging.error(f"Error generating content from Gemini: {e}", exc_info=True)
+            logging.error(f"Error generating response: {e}")
             return {
                 "response": "Désolé, une erreur est survenue lors de la génération de la réponse.",
                 "language": language,
@@ -282,25 +287,35 @@ Provided Context (if relevant):
                 "mode": "error"
             }
 
-    def chat(self, query):
-        """Fonction principale de chat, gère la détection de langue, la pertinence et la génération de réponse."""
-        logging.info(f"Chat request received: {query[:50]}...")
-        lang = self.detect_language(query)
-        logging.info(f"Detected language: {lang}")
-        
-        # Utiliser la nouvelle méthode de détection basée sur Gemini
-        if not self.is_religious_question(query):
-            logging.info("Non-religious question detected by Gemini.")
+    def chat(self, query: str) -> Dict:
+        """Fonction principale de chat."""
+        try:
+            logging.info(f"Processing chat request: {query[:50]}...")
+            
+            # Detect language
+            language = self.detect_language(query)
+            logging.info(f"Detected language: {language}")
+
+            # Check if religious question
+            if not self.is_religious_question(query):
+                return {
+                    "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
+                    "language": language,
+                    "sources": [],
+                    "mode": "non-religious"
+                }
+
+            # Search for relevant chunks
+            chunks = self.search_similar_chunks(query)
+            
+            # Generate response
+            return self.generate_response(query, chunks, language)
+            
+        except Exception as e:
+            logging.error(f"Error in chat method: {e}", exc_info=True)
             return {
-                "response": "Je suis QuranIQ, spécialisé uniquement dans les questions islamiques. Posez-moi une question sur l'Islam.",
-                "language": lang,
+                "response": "Une erreur est survenue. Veuillez réessayer.",
+                "language": "fr",
                 "sources": [],
-                "mode": "non-religious"
+                "mode": "error"
             }
-                
-        logging.info("Religious question detected by Gemini. Searching for similar chunks...")
-        chunks = self.search_similar_chunks(query)
-        logging.info(f"Found {len(chunks)} similar chunks.")
-                
-        logging.info("Generating response from Gemini model...")
-        return self.generate_response(query, chunks, lang)
