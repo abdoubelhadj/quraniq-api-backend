@@ -11,7 +11,7 @@ class QuranIQChatbot:
         self.working_model_name = "mistralai/mistral-7b-instruct"  # Modèle par défaut
         self.is_loaded = False
         self.request_count = 0
-        self.last_request_time = 0  # Corrigé : remplacé 'otten' par 0
+        self.last_request_time = 0
         self.load_components()
 
     def load_components(self):
@@ -88,22 +88,64 @@ class QuranIQChatbot:
             return "fr"
 
     def is_religious_question(self, query: str) -> bool:
-        """Check if the question is religious using keywords."""
-        religious_keywords = {
-            'ar': ['الله', 'النبي', 'القرآن', 'الإسلام', 'الصلاة', 'الحج', 'الزكاة', 'الصوم', 'محمد', 'عيسى', 'موسى', 'إبراهيم', 'داوود'],
-            'fr': ['allah', 'prophète', 'coran', 'islam', 'prière', 'hajj', 'zakat', 'jeûne', 'mohammed', 'jésus', 'moïse', 'abraham', 'david'],
-            'en': ['allah', 'prophet', 'quran', 'islam', 'prayer', 'hajj', 'zakat', 'fasting', 'muhammad', 'jesus', 'moses', 'abraham', 'david'],
-            'dz': ['ربي', 'الرسول', 'القرآن', 'الدين', 'الصلاة']
-        }
+        """Check if the question is religious using OpenRouter API."""
+        if not self.is_loaded:
+            logging.warning("OpenRouter API not initialized, defaulting to non-religious classification")
+            return False
         
-        query_lower = query.lower()
-        for lang_keywords in religious_keywords.values():
-            if any(keyword in query_lower for keyword in lang_keywords):
-                logging.info("Question classified as RELIGIOUS (keyword match)")
-                return True
-        
-        logging.info("Question classified as NON-RELIGIOUS (keyword match)")
-        return False
+        try:
+            self._rate_limit_openrouter()
+            
+            language = self.detect_language(query)
+            prompts = {
+                "fr": f"Cette question est-elle liée à l'Islam ? Répondez uniquement par 'oui' ou 'non'. Question : {query}",
+                "ar": f"هل هذا السؤال متعلق بالإسلام؟ أجب فقط بـ 'نعم' أو 'لا'. السؤال: {query}",
+                "en": f"Is this question related to Islam? Answer only 'yes' or 'no'. Question: {query}",
+                "dz": f"هل السؤال هذا يخص الإسلام؟ جاوب غير بـ 'نعم' أو 'لا'. السؤال: {query}"
+            }
+            
+            prompt = prompts.get(language, prompts["en"])
+            
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://quraniq-api-backend.onrender.com",
+                "X-Title": "QuranIQ API"
+            }
+            data = {
+                "model": self.working_model_name,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=data,
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    response_json = response.json()
+                    if "choices" in response_json and response_json["choices"]:
+                        answer = response_json["choices"][0]["message"]["content"].strip().lower()
+                        logging.info(f"Question classified as {'RELIGIOUS' if answer in ['yes', 'oui', 'نعم'] else 'NON-RELIGIOUS'} (OpenRouter response: {answer})")
+                        return answer in ['yes', 'oui', 'نعم']
+                    else:
+                        raise Exception("Invalid response from OpenRouter API")
+                except requests.exceptions.RequestException as e:
+                    if response and response.status_code == 429:
+                        wait_time = 8
+                        logging.warning(f"Rate limit hit in is_religious_question, retrying in {wait_time} seconds (attempt {attempt + 1})")
+                        time.sleep(wait_time)
+                    else:
+                        raise
+            
+            logging.error("Max retries reached for OpenRouter API in is_religious_question")
+            return False  # Fallback to non-religious if API fails
+            
+        except Exception as e:
+            logging.error(f"Error classifying question: {e}")
+            return False  # Fallback to non-religious if API fails
 
     def generate_response(self, query: str, language: str) -> Dict:
         """Generate a response using OpenRouter API with retry logic."""
