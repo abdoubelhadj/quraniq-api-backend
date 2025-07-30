@@ -22,14 +22,11 @@ class QuranIQChatbot:
         self.load_components()
 
     def find_working_gemini_model(self):
-        """Trouve un modèle Gemini fonctionnel en testant les modèles disponibles."""
+        """Trouve un modèle Gemini fonctionnel."""
         models = [
             "gemini-1.5-flash", 
             "gemini-1.5-pro", 
-            "gemini-pro", 
-            "models/gemini-1.5-flash", 
-            "models/gemini-1.5-pro", 
-            "models/gemini-pro"
+            "gemini-pro"
         ]
         
         for name in models:
@@ -96,10 +93,17 @@ class QuranIQChatbot:
             raise ValueError("BLOB_INDEX_URL or BLOB_METADATA_URL not set")
 
         try:
-            # Download FAISS index
+            # Download FAISS index with retry logic
             logging.info("📥 Downloading FAISS index...")
-            index_response = requests.get(blob_index_url, timeout=60)
-            index_response.raise_for_status()
+            for attempt in range(3):
+                try:
+                    index_response = requests.get(blob_index_url, timeout=120)
+                    index_response.raise_for_status()
+                    break
+                except requests.RequestException as e:
+                    if attempt == 2:
+                        raise
+                    logging.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
             
             with open("/tmp/index.faiss", "wb") as f:
                 f.write(index_response.content)
@@ -107,10 +111,17 @@ class QuranIQChatbot:
             self.index = faiss.read_index("/tmp/index.faiss")
             logging.info("✅ FAISS index loaded")
 
-            # Download metadata
+            # Download metadata with retry logic
             logging.info("📥 Downloading metadata...")
-            metadata_response = requests.get(blob_metadata_url, timeout=60)
-            metadata_response.raise_for_status()
+            for attempt in range(3):
+                try:
+                    metadata_response = requests.get(blob_metadata_url, timeout=120)
+                    metadata_response.raise_for_status()
+                    break
+                except requests.RequestException as e:
+                    if attempt == 2:
+                        raise
+                    logging.warning(f"Attempt {attempt + 1} failed, retrying: {e}")
             
             data = metadata_response.json()
             self.chunks = data["chunks"]
@@ -125,7 +136,7 @@ class QuranIQChatbot:
             raise
 
     def detect_language(self, text: str) -> str:
-        """Détecte la langue du texte (fr, ar, en, dz)."""
+        """Détecte la langue du texte."""
         try:
             arabic_chars = re.compile(r'[\u0600-\u06FF]')
             if arabic_chars.search(text):
@@ -141,7 +152,7 @@ class QuranIQChatbot:
             return "fr"
         except Exception as e:
             logging.warning(f"Language detection error: {e}")
-            return "fr"  # Default to French
+            return "fr"
 
     def is_religious_question(self, query: str) -> bool:
         """Vérifie si la question est de nature religieuse."""
@@ -162,8 +173,7 @@ class QuranIQChatbot:
             
         except Exception as e:
             logging.error(f"Error in religious classification: {e}")
-            # Default to True to be safe
-            return True
+            return True  # Default to True to be safe
 
     def generate_query_embedding(self, query: str) -> Optional[np.ndarray]:
         """Génère l'embedding d'une requête avec Cohere."""
