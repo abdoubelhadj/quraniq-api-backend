@@ -4,6 +4,7 @@ import sys
 from contextlib import asynccontextmanager
 import signal
 import asyncio
+import time
 
 # Configure logging first
 logging.basicConfig(
@@ -12,7 +13,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -41,44 +42,30 @@ if not chatbot_imported:
     except ImportError as e:
         logging.warning(f"⚠️ Failed to import from api.app.chatbot: {e}")
 
-# Strategy 3: Add current directory to path and try again
-if not chatbot_imported:
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        sys.path.insert(0, current_dir)
-        from app.chatbot import QuranIQChatbot
-        chatbot_imported = True
-        logging.info("✅ Successfully imported QuranIQChatbot after adding current dir to path")
-    except ImportError as e:
-        logging.warning(f"⚠️ Failed to import after adding current dir: {e}")
-
-# Strategy 4: Try direct file import
-if not chatbot_imported:
-    try:
-        import importlib.util
-        chatbot_path = os.path.join(os.path.dirname(__file__), 'app', 'chatbot.py')
-        if os.path.exists(chatbot_path):
-            spec = importlib.util.spec_from_file_location("chatbot", chatbot_path)
-            chatbot_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(chatbot_module)
-            QuranIQChatbot = chatbot_module.QuranIQChatbot
-            chatbot_imported = True
-            logging.info("✅ Successfully imported QuranIQChatbot via direct file import")
-    except Exception as e:
-        logging.warning(f"⚠️ Failed direct file import: {e}")
-
 # Final check
 if not chatbot_imported or QuranIQChatbot is None:
     logging.error("❌ All import strategies failed!")
-    # Create a dummy class to prevent startup failure
-    class QuranIQChatbot:
-        def __init__(self):
-            self.is_loaded = False
-        def chat(self, query):
-            return {"response": "Service temporarily unavailable", "language": "fr", "sources": [], "mode": "error"}
+    raise ImportError("Could not import QuranIQChatbot")
 
 # Global chatbot instance
 chatbot = None
+
+# Rate limiting for the entire API
+request_times = []
+MAX_REQUESTS_PER_MINUTE = 10
+
+def check_rate_limit():
+    """Check if we're within rate limits"""
+    current_time = time.time()
+    # Remove requests older than 1 minute
+    global request_times
+    request_times = [t for t in request_times if current_time - t < 60]
+    
+    if len(request_times) >= MAX_REQUESTS_PER_MINUTE:
+        return False
+    
+    request_times.append(current_time)
+    return True
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,18 +75,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logging.info("🚀 Starting QuranIQ API...")
     logging.info(f"Current working directory: {os.getcwd()}")
-    logging.info(f"Python path: {sys.path[:3]}")
     logging.info(f"Chatbot imported successfully: {chatbot_imported}")
-    
-    # List files in current directory for debugging
-    try:
-        current_files = os.listdir('.')
-        logging.info(f"Files in current directory: {current_files}")
-        if 'app' in current_files:
-            app_files = os.listdir('./app')
-            logging.info(f"Files in app directory: {app_files}")
-    except Exception as e:
-        logging.warning(f"Could not list directory contents: {e}")
     
     if chatbot_imported:
         try:
@@ -153,29 +129,30 @@ class HealthResponse(BaseModel):
     status: str
     message: str
     model: str = None
-
-class DebugResponse(BaseModel):
-    current_directory: str
-    python_path: list
-    files_structure: dict
-    chatbot_status: dict
-    environment_vars: dict
+    rate_limit_info: dict = None
 
 # Health check endpoint
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for monitoring"""
+    rate_limit_info = {
+        "requests_in_last_minute": len([t for t in request_times if time.time() - t < 60]),
+        "max_requests_per_minute": MAX_REQUESTS_PER_MINUTE
+    }
+    
     if chatbot and hasattr(chatbot, 'is_loaded') and chatbot.is_loaded:
         return HealthResponse(
             status="healthy",
             message="QuranIQ API is running",
-            model=getattr(chatbot, 'working_model_name', 'unknown')
+            model=getattr(chatbot, 'working_model_name', 'unknown'),
+            rate_limit_info=rate_limit_info
         )
     elif chatbot_imported:
         return HealthResponse(
             status="degraded",
             message="QuranIQ API is running but chatbot not fully initialized",
-            model="unknown"
+            model="unknown",
+            rate_limit_info=rate_limit_info
         )
     else:
         raise HTTPException(
@@ -189,8 +166,16 @@ async def root():
     return await health_check()
 
 @app.post("/chat", response_model=QueryResponse)
-async def chat_endpoint(req: QueryRequest):
-    """Chat endpoint"""
+async def chat_endpoint(req: QueryRequest, request: Request):
+    """Chat endpoint with rate limiting"""
+    
+    # Check rate limit
+    if not check_rate_limit():
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Please wait before making another request."
+        )
+    
     if not chatbot:
         logging.error("Chatbot not initialized for request")
         raise HTTPException(
@@ -205,7 +190,7 @@ async def chat_endpoint(req: QueryRequest):
         )
     
     try:
-        logging.info(f"Processing chat request: {req.query[:50]}...")
+        logging.info(f"Processing chat request from {request.client.host}: {req.query[:50]}...")
         result = chatbot.chat(req.query)
         logging.info("Chat request processed successfully")
         return result
@@ -213,65 +198,13 @@ async def chat_endpoint(req: QueryRequest):
         logging.error(f"Error processing chat request: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="An error occurred while processing your request"
+            detail="An error occurred while processing your request. Please try again later."
         )
 
 @app.get("/ping")
 async def ping():
     """Simple ping endpoint to keep the service alive"""
-    return {"message": "pong", "timestamp": asyncio.get_event_loop().time()}
-
-@app.get("/debug/info", response_model=DebugResponse)
-async def debug_info():
-    """Debug endpoint to check system information"""
-    import os
-    import sys
-    
-    current_dir = os.getcwd()
-    
-    # Build file structure
-    files_structure = {}
-    try:
-        for root, dirs, files in os.walk(current_dir):
-            rel_root = os.path.relpath(root, current_dir)
-            if rel_root == '.':
-                rel_root = 'root'
-            files_structure[rel_root] = {
-                'directories': dirs,
-                'files': [f for f in files if f.endswith(('.py', '.txt', '.yaml', '.yml', '.json'))]
-            }
-            # Limit depth to avoid too much data
-            if len(files_structure) > 10:
-                break
-    except Exception as e:
-        files_structure = {"error": str(e)}
-    
-    return DebugResponse(
-        current_directory=current_dir,
-        python_path=sys.path[:5],
-        files_structure=files_structure,
-        chatbot_status={
-            "imported": chatbot_imported,
-            "instance_created": chatbot is not None,
-            "initialized": getattr(chatbot, 'is_loaded', False) if chatbot else False,
-            "model": getattr(chatbot, 'working_model_name', 'N/A') if chatbot else 'N/A'
-        },
-        environment_vars={
-            "PORT": os.getenv("PORT", "Not set"),
-            "GOOGLE_API_KEY_SET": "Yes" if os.getenv("GOOGLE_GENERATIVE_AI_API_KEY") else "No",
-            "COHERE_API_KEY_SET": "Yes" if os.getenv("COHERE_API_KEY") else "No",
-            "BLOB_URLS_SET": "Yes" if (os.getenv("BLOB_INDEX_URL") and os.getenv("BLOB_METADATA_URL")) else "No"
-        }
-    )
-
-# Graceful shutdown handler
-def signal_handler(signum, frame):
-    logging.info(f"Received signal {signum}, shutting down gracefully...")
-    sys.exit(0)
-
-# Register signal handlers
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+    return {"message": "pong", "timestamp": time.time()}
 
 if __name__ == "__main__":
     import uvicorn
@@ -283,7 +216,7 @@ if __name__ == "__main__":
     
     # Run with proper configuration for production
     uvicorn.run(
-        "main:app",  # Changed from "api.main:app" to "main:app"
+        "main:app",
         host="0.0.0.0",
         port=port,
         log_level="info",
